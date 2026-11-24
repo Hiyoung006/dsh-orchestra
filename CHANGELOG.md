@@ -2,6 +2,20 @@
 
 本文件记录 DSH Orchestra 插件包的用户可见变更。版本号与 [`package.json`](package.json) 一致。
 
+## 0.1.0-beta.3 — 开发中（M0）
+
+### 工程
+
+- 发布基线改为以 `lib/` 为唯一源码，移除不可执行的 `tsdown`/`tsc` 构建脚本。
+- 新增 `pnpm-lock.yaml` 与 `pnpm-workspace.yaml`，关闭 peer 自动安装，不拉取或升级 DSH 宿主依赖。
+- 新增可复现打包：双次 `pnpm pack` 比对、SHA256、CycloneDX SBOM 和关联 Git commit 的 `build-info.json`。
+- 新增 GitHub Actions：Type Check、Unit Test、Integration Test、Security Test、Build、Package Integrity。
+
+### 安全
+
+- `zod` 从 `4.4.3` 升级到 `4.6.6`，修复 GHSA-mrhx-c7xc-m3w5（超大约束集合导致内存耗尽）。
+- 依赖审计固定使用官方 npm registry，避免镜像缺少审计端点。
+
 ## 0.1.0-beta.2 — 2026-11-24
 
 ### 新增

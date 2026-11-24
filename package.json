@@ -48,9 +48,14 @@
     "manifestVersion": 1
   },
   "scripts": {
-    "build": "tsdown",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node scripts/type-surface-check.mjs",
+    "build": "node scripts/build-package.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
     "test": "node --no-warnings --test",
+    "test:unit": "node --no-warnings --test tests/task-*.test.mjs tests/persistence.test.mjs tests/review-agent.test.mjs tests/workspace-isolation.test.mjs tests/release-compat.test.mjs tests/release-engineering.test.mjs tests/web-profile-host.test.mjs tests/workflow-templates.test.mjs",
+    "test:integration": "node --no-warnings --test tests/service-integration.test.mjs",
+    "test:security": "node --no-warnings --test tests/service-integration.test.mjs",
+    "audit": "pnpm --registry=https://registry.npmjs.org/ audit --prod --audit-level=high",
     "test:persistence": "node --test tests/persistence.test.mjs",
     "test:lifecycle": "node --test tests/task-lifecycle.test.mjs",
     "test:workspace": "node --test tests/workspace-isolation.test.mjs",
@@ -58,9 +63,8 @@
     "test:review": "node --test tests/review-agent.test.mjs",
     "test:scheduler": "node --test tests/task-scheduler.test.mjs",
     "test:dependencies": "node --test tests/task-dependencies.test.mjs",
-    "test:integration": "node --test tests/service-integration.test.mjs",
-    "check": "pnpm typecheck && pnpm test && pnpm build",
-    "gate": "node --no-warnings scripts/gate-check.ts"
+    "check": "pnpm typecheck && pnpm test && pnpm build && pnpm verify:package",
+    "gate": "pnpm check"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
@@ -69,7 +73,7 @@
   "packageManager": "pnpm@12.3.4",
   "dependencies": {
     "proper-lockfile": "4.1.2",
-    "zod": "4.4.3"
+    "zod": "4.6.6"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.1.0",

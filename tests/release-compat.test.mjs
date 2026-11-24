@@ -14,7 +14,7 @@ test("发布元数据：版本、引擎范围与打包清单一致", () => {
 	assert.equal(pkg.engines.dsh, ">=0.2.2-0 <0.2.3-0");
 	assert.equal(pkg.engines.node, "^22.19.0 || >=24.0.0");
 	assert.equal(pkg.dependencies["proper-lockfile"], "4.1.2");
-	assert.equal(pkg.dependencies.zod, "4.4.3");
+	assert.equal(pkg.dependencies.zod, "4.6.6");
 	for (const [name, range] of Object.entries(pkg.peerDependencies)) {
 		if (name.startsWith("@deepseek-ai/dsh-")) assert.equal(range, ">=0.2.2-0 <0.2.3-0", `宿主依赖范围被改动: ${name}`);
 	}
