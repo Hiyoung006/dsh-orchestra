@@ -4146,4 +4146,136 @@ declare function serveOrchestra(opts: OrchestraOptions & {
   recoverChatModelAssignment?: (input: Parameters<typeof recoverChatModelAssignment>[3]) => Promise<string[]>;
   close: () => Promise<void>;
 }>;
-export { type CollaborationBinding, type CollaborationHost, Config, type DshExecutionModel, type EffectVerdict, type EffectVerificationTarget, type EffectVerifier, type InspectMemoryWrite, type IntakeOptions, type MemoryHostOptions, type MemoryPluginWriter, type MemoryRecoveryRequest, type MemoryRuntimeOptions, type MemoryWriteEvidence, type MemoryWriteInspection, type ModelComplexity, type ModelProfile, type ModelRecommendation, type ModelRouting, type ModelRoutingContext, Orchestra, OrchestraOptions, type PlanningTimeoutSnapshot, ReadOnlyToolRunner, type RegisterRunArtifact, type ResolveTriggerNodeSpecs, type TaskPlanProposal, type TaskPlanningOptions, type TaskTriggerCreate, type TaskTriggerExecutionFilter, type TaskTriggerExecutionRow, type TaskTriggerOccurrence, type TaskTriggerReadiness, type TaskTriggerView, ToolRegistry, type TrialOptions, type TrialScope, type TriggerRunReady, apply, createCollaborationHost, createDshExecutor, createDshPlanningCallback, createIntakeControl, createMemoryRuntime, createOrchestra, getTaskPlanRecommendation, inspectMemoryRecovery, listTriggerExecutionStates, name, openServiceOrchestra, registerRunArtifact, renewNodeLease, resolveMemoryRecovery, runNode, serveDshOrchestra, serveOrchestra, submitReport, sweepNow, version, withPlanningBudget };
+declare const SANDBOX_KINDS: readonly ["local_process", "read_only_workspace", "docker", "restricted_network"];
+type SandboxKind = (typeof SANDBOX_KINDS)[number];
+declare const TASK_RISKS: readonly ["low", "medium", "high"];
+type TaskRisk = (typeof TASK_RISKS)[number];
+type SandboxNetworkMode = "none" | "allowlist" | "host";
+type SandboxPolicy = {
+  kind: SandboxKind;
+  task_risk: TaskRisk;
+  isolation: "process" | "capability" | "container";
+  container: boolean;
+  filesystem: {
+    workspace_root: string;
+    roots: readonly string[];
+    read_only: boolean;
+  };
+  network: {
+    mode: SandboxNetworkMode;
+    allow_hosts: readonly string[];
+  };
+  tools: {
+    allow: readonly string[];
+    deny: readonly string[];
+    default: "deny";
+  };
+  allow_host_execution: boolean;
+  fail_closed: true;
+};
+type SandboxToolCapability = "read_only" | "mutating" | "compensating";
+type SandboxRunRequest = {
+  bin: string;
+  args?: string[];
+  cwd: string;
+  timeoutMs?: number;
+  tool?: string;
+  capability?: SandboxToolCapability;
+  networkHost?: string;
+  signal?: AbortSignal;
+};
+type SandboxRunResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  boundary: string;
+  timedOut?: boolean;
+};
+type SandboxAdapter = {
+  kind?: SandboxKind;
+  available?: () => boolean;
+  run: (request: SandboxRunRequest, policy: SandboxPolicy) => Promise<SandboxRunResult | {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+    boundary?: string;
+    timedOut?: boolean;
+  }>;
+  dispose?: () => Promise<void> | void;
+};
+type ExecutionSandbox = {
+  readonly kind: SandboxKind;
+  readonly isolation: SandboxPolicy["isolation"];
+  readonly policy: SandboxPolicy;
+  describe(): Readonly<Record<string, unknown>>;
+  assertTool(input: {
+    name: string;
+    capability?: SandboxToolCapability;
+  }): true;
+  assertPath(target: string): string;
+  assertNetwork(input: {
+    host: string;
+  }): true;
+  assertTask(sideEffectPolicy?: "pure" | "compensable" | "irreversible"): SandboxPolicy;
+  run(request: SandboxRunRequest): Promise<SandboxRunResult>;
+  dispose(): Promise<void>;
+};
+declare class SandboxError extends Error {
+  code: string;
+  details: Record<string, unknown>;
+  constructor(code: string, message: string, details?: Record<string, unknown>);
+}
+declare function resolveSandboxPolicy(options?: {
+  taskRisk?: TaskRisk;
+  requestedKind?: SandboxKind;
+  availableKinds?: SandboxKind[];
+  workspaceRoot: string;
+  allowedRoots?: string[];
+  network?: SandboxNetworkMode;
+  allowHosts?: string[];
+  tools?: {
+    allow?: string[];
+    deny?: string[];
+  };
+  allowWrite?: boolean;
+  allowHostExecution?: boolean;
+}): SandboxPolicy;
+declare function assertSandboxForTask(input: {
+  sideEffectPolicy?: "pure" | "compensable" | "irreversible";
+  policy: SandboxPolicy;
+}): SandboxPolicy;
+declare function createExecutionSandbox(input: {
+  policy: SandboxPolicy;
+  adapters?: Partial<Record<SandboxKind, SandboxAdapter>>;
+}): ExecutionSandbox;
+declare function createReadOnlyWorkspaceAdapter(options?: {
+  run?: SandboxAdapter["run"];
+}): SandboxAdapter;
+declare function createLocalProcessAdapter(options?: {
+  run?: SandboxAdapter["run"];
+}): SandboxAdapter;
+declare function createDockerAdapter(options?: {
+  image?: string;
+  dockerBin?: string;
+  spawnImpl?: (...args: any[]) => any;
+  user?: string;
+  memory?: string;
+  pidsLimit?: number;
+  maxOutputBytes?: number;
+  networkName?: string;
+}): SandboxAdapter & {
+  buildArgs(request: SandboxRunRequest, policy: SandboxPolicy): string[];
+};
+declare function createRestrictedNetworkAdapter(options?: {
+  image?: string;
+  dockerBin?: string;
+  spawnImpl?: (...args: any[]) => any;
+  user?: string;
+  memory?: string;
+  pidsLimit?: number;
+  maxOutputBytes?: number;
+  networkName?: string;
+}): SandboxAdapter & {
+  buildArgs(request: SandboxRunRequest, policy: SandboxPolicy): string[];
+};
+export { type CollaborationBinding, type CollaborationHost, Config, type DshExecutionModel, type EffectVerdict, type EffectVerificationTarget, type EffectVerifier, type ExecutionSandbox, type InspectMemoryWrite, type IntakeOptions, type MemoryHostOptions, type MemoryPluginWriter, type MemoryRecoveryRequest, type MemoryRuntimeOptions, type MemoryWriteEvidence, type MemoryWriteInspection, type ModelComplexity, type ModelProfile, type ModelRecommendation, type ModelRouting, type ModelRoutingContext, Orchestra, OrchestraOptions, type PlanningTimeoutSnapshot, ReadOnlyToolRunner, type RegisterRunArtifact, type ResolveTriggerNodeSpecs, SANDBOX_KINDS, SandboxError, type SandboxKind, type SandboxPolicy, type SandboxRunRequest, type SandboxRunResult, TASK_RISKS, type TaskPlanProposal, type TaskPlanningOptions, type TaskRisk, type TaskTriggerCreate, type TaskTriggerExecutionFilter, type TaskTriggerExecutionRow, type TaskTriggerOccurrence, type TaskTriggerReadiness, type TaskTriggerView, ToolRegistry, type TrialOptions, type TrialScope, type TriggerRunReady, apply, assertSandboxForTask, createCollaborationHost, createDockerAdapter, createDshExecutor, createDshPlanningCallback, createExecutionSandbox, createIntakeControl, createLocalProcessAdapter, createMemoryRuntime, createOrchestra, createReadOnlyWorkspaceAdapter, createRestrictedNetworkAdapter, getTaskPlanRecommendation, inspectMemoryRecovery, listTriggerExecutionStates, name, openServiceOrchestra, registerRunArtifact, renewNodeLease, resolveMemoryRecovery, resolveSandboxPolicy, runNode, serveDshOrchestra, serveOrchestra, submitReport, sweepNow, version, withPlanningBudget };

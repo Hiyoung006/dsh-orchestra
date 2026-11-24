@@ -169,7 +169,7 @@ sequenceDiagram
 
 在获准工作区根目录创建普通 UTF-8 文本 `ORCHESTRA.md`，写下项目目标、关键目录和验证规则。把优先内容放在最前 120 行和 4 KiB 内。首次派单固定本次运行采用的版本，后续节点复用同一份。运行侧会另附本次要求与必要的上游成果引用。
 
-在 **设置** 可调整主脑和执行模型、自动接管、规划与执行时限、排队容量及 Workflow 并发。模型目录与能否设置思考强度由 DSH 提供。开通的工具决定子智能体能读什么。个人适配器的 `local.allowWorkspaceListing` 默认关闭，只授权列出允许的一级条目。`local.sampleFile` 可在宿主配置中指定一个明确授权的文本文件供验收读取。
+在 **设置** 可调整主脑和执行模型、自动接管、规划与执行时限、排队容量及 Workflow 并发。模型目录与能否设置思考强度由 DSH 提供。开通的工具决定子智能体能读什么。个人适配器的 `local.allowWorkspaceListing` 默认关闭，只授权列出允许的一级条目。`local.sampleFile` 可在宿主配置中指定一个明确授权的文本文件供验收读取。`local.sandbox.kind` 选择执行沙箱，默认 `read_only_workspace`；`local.sandbox.risk` 为 `high` 时只接受容器级隔离，宿主不具备对应沙箱会在启动时直接拒绝，而不会退回真实宿主执行。
 
 ### 个人 Desktop 与自管宿主
 
