@@ -9,6 +9,7 @@ import {
 	LLM_REVIEW_SECTIONS,
 	REVIEW_AGENT_ID,
 	ReviewIsolationError,
+	ReviewTriggerError,
 	analyzeAst,
 	buildLlmEvidence,
 	detectSecrets,
@@ -19,7 +20,9 @@ import {
 	reviewAllowsAcceptance,
 	runIndependentLlmReview,
 	runIndependentReview,
-	runIndependentReviewWithLlm
+	runIndependentReviewWithLlm,
+	runManualLlmReview,
+	runSastScan
 } from "../lib/review-agent.js";
 
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "infra", "sqlite", "migrations");
@@ -450,4 +453,114 @@ test("LLM 开关：异步入口合并报告，但永远保留人工审批", asyn
 	assert.equal(report.reviewStatus, "pass");
 	assert.equal(reviewAllowsAcceptance(report), false);
 	assert.equal(report.checks.aiReview, "completed");
+});
+
+test("SAST 接口：内置规则与外部 provider 并行，异步 provider 明确跳过", () => {
+	const files = [
+		{ path: "src/evil.js", text: "const key = 'AKIAABCDEFGHIJKLMNOP'; eval('x')" },
+		{ path: "src/clean.js", text: "const ok = 1;" },
+		{ path: "src/no-text.js" }
+	];
+	const builtin = runSastScan({ files });
+	assert.equal(builtin.available, true);
+	assert.equal(builtin.engine, "builtin_rules");
+	assert.ok(builtin.secretFindings.some((item) => item.rule === "aws_access_key"));
+	assert.ok(builtin.secretFindings.some((item) => item.excerpt.includes("[redacted]")));
+	assert.ok(builtin.scanned.includes("src/evil.js"));
+	assert.ok(builtin.skipped.some((item) => item.reason === "text_unreadable"));
+
+	const external = runSastScan({
+		files,
+		provider: ({ path }) => path.endsWith("evil.js") ? [{ id: "SAST-TEST-1", severity: "high", summary: "外部扫描命中" }] : []
+	});
+	assert.equal(external.engine, "builtin_rules+host_provider");
+	assert.ok(external.findings.some((item) => item.rule === "SAST-TEST-1"));
+
+	const asynchronous = runSastScan({ files: [{ path: "a.js", text: "ok" }], provider: async () => [] });
+	assert.ok(asynchronous.skipped.some((item) => item.reason === "async_provider_requires_async_review"));
+});
+
+test("审查报告分别记录 SAST、AST、依赖与证据来源", () => {
+	const db = freshDb();
+	const tx = seed(db);
+	addArtifact(tx, { id: "art_secret", name: "secret.js", content: "const key = 'AKIAABCDEFGHIJKLMNOP';" });
+	const report = baseReview(tx, {
+		sast: {
+			provider: ({ path }) => path.endsWith("secret.js") ? [{ id: "SAST-EXT-1", severity: "high", summary: "外部规则命中" }] : []
+		}
+	});
+	assert.equal(report.sast.available, true);
+	assert.equal(report.sast.engine, "builtin_rules+host_provider");
+	assert.ok(report.sast.findings.some((item) => item.rule === "aws_access_key"));
+	assert.ok(report.sast.external.findings.some((item) => item.rule === "SAST-EXT-1"));
+	assert.equal(report.checks.sast, report.securityIssues.length);
+	assert.equal(report.reviewStatus, "fail");
+	assert.equal(report.resultKinds.real_evidence.every((item) => item.evidence_type === "deterministic"), true);
+});
+
+test("人工触发 LLM Review：必须具名、记录来源、不能自动批准", async () => {
+	const db = freshDb();
+	const tx = seed(db);
+	const report = baseReview(tx);
+
+	await assert.rejects(
+		runManualLlmReview({ report, config: { enabled: true } }),
+		(error) => error instanceof ReviewTriggerError && error.code === "LLM_REVIEW_MANUAL_TRIGGER_REQUIRED"
+	);
+	await assert.rejects(
+		runManualLlmReview({ report: null, requestedBy: "local-dsh:tester" }),
+		(error) => error instanceof ReviewTriggerError && error.code === "REVIEW_REPORT_REQUIRED"
+	);
+
+	const manual = await runManualLlmReview({
+		report,
+		requestedBy: "local-dsh:tester",
+		now: NOW,
+		config: {
+			enabled: true,
+			model: "review-model",
+			complete: async () => ({
+				correctness: { status: "pass" },
+				security: { status: "pass" },
+				maintainability: { status: "pass" },
+				test_coverage: { status: "pass" },
+				requirement_compliance: { status: "pass" },
+				score: 100
+			})
+		}
+	});
+	assert.notEqual(manual.review_id, report.review_id);
+	assert.equal(manual.parent_review_id, report.review_id);
+	assert.equal(manual.trigger.kind, "manual");
+	assert.equal(manual.trigger.requested_by, "local-dsh:tester");
+	assert.equal(manual.trigger.requested_at, NOW);
+	assert.equal(manual.trigger.automatic_approval, false);
+	assert.equal(manual.llm_trigger, "manual");
+	assert.equal(manual.approval_eligible, false);
+	assert.equal(manual.reviewStatus, "pass");
+	assert.equal(reviewAllowsAcceptance(manual), false);
+
+	persistReviewReport(tx, manual);
+	assert.equal(latestReviewReport(tx, "t1").review_id, manual.review_id);
+});
+
+test("人工 LLM Review 不可用或不可解析时保持原结论并阻断自动通过", async () => {
+	const db = freshDb();
+	const tx = seed(db);
+	const report = baseReview(tx);
+
+	const failed = await runManualLlmReview({
+		report,
+		requestedBy: "local-dsh:tester",
+		now: NOW,
+		config: { enabled: true, complete: async () => { throw new Error("reviewer down"); } }
+	});
+	assert.equal(failed.reviewStatus, "pass");
+	assert.equal(failed.llmReview.available, false);
+	assert.equal(failed.checks.aiReview, "unavailable");
+	assert.equal(reviewAllowsAcceptance(failed), false);
+
+	const failedReport = mergeLlmReview({ ...report, reviewStatus: "fail" }, { available: true, blocking: false, engine: "independent_llm" });
+	assert.equal(failedReport.reviewStatus, "fail");
+	assert.equal(reviewAllowsAcceptance(failedReport), false);
 });
