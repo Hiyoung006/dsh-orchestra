@@ -1,0 +1,102 @@
+{
+  "name": "dsh-orchestra",
+  "version": "0.1.0-beta.2",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "description": "DSH bundle plugin: cross-session, recoverable workflow orchestration with a deterministic ledger.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "scripts/orchestra-persistence.mjs",
+    "cordis.patch.yml",
+    "orchestra.config.json",
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "docs/assets/readme",
+    "docs/runbook.md",
+    "docs/trial-circles.md",
+    "docs/upgrade-downgrade.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-input-trigger",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    },
+    "manifestVersion": 1
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node --no-warnings --test",
+    "test:persistence": "node --test tests/persistence.test.mjs",
+    "test:lifecycle": "node --test tests/task-lifecycle.test.mjs",
+    "test:workspace": "node --test tests/workspace-isolation.test.mjs",
+    "test:acceptance": "node --test tests/task-acceptance.test.mjs",
+    "test:review": "node --test tests/review-agent.test.mjs",
+    "test:scheduler": "node --test tests/task-scheduler.test.mjs",
+    "test:dependencies": "node --test tests/task-dependencies.test.mjs",
+    "test:integration": "node --test tests/service-integration.test.mjs",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "gate": "node --no-warnings scripts/gate-check.ts"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.2-0 <0.2.3-0"
+  },
+  "packageManager": "pnpm@12.3.4",
+  "dependencies": {
+    "proper-lockfile": "4.1.2",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.1.0",
+    "@deepseek-ai/dsh-agent": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-api-session-controller": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-host-webserver": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-permission-presets": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-scope": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-session": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-session-persistence": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-skill": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-subprocess": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-0 <0.2.3-0",
+    "@deepseek-ai/schemastery": "^3.19.0"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
+    "@types/node": "22.20.5",
+    "@types/proper-lockfile": "4.1.4",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "jsdom": "29.1.1",
+    "markdown-it": "^15.0.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tsdown": "0.22.14",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
+  }
+}
