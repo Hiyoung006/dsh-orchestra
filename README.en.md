@@ -10,7 +10,7 @@ DSH Orchestra is a workflow orchestration plugin for DeepSeek Harness (DSH). Des
 - **Research and write** · Split research by topic and give the final writing step the registered findings it needs.
 - **Review and revise** · Read a result alongside its criteria and send feedback to the step that produced it. Review the new version when it is ready.
 
-[Quick start](#quick-start) · [Capabilities](#capabilities) · [Architecture](#architecture) · [Usage](#usage) · [Development and validation](#development-and-validation) · [License](#license)
+[Quick start](#quick-start) · [Capabilities](#capabilities) · [Architecture](#architecture) · [Usage](#usage) · [Development and validation](#development-and-validation) · [Provenance and acknowledgements](#provenance-and-acknowledgements) · [License](#license)
 
 ![Orchestra desktop workflow view showing parallel checks, a join, and different reasons for waiting](docs/assets/readme/workflow.png)
 
@@ -219,6 +219,10 @@ Coverage includes task lifecycle, dependencies and cycles, JSON/SQLite persisten
 Install the resulting `dsh-orchestra-*.tgz` in the intended DSH profile. A self-managed web profile can use `dsh plugin --profile web add <absolute-path-to-tgz>` and then wire its authenticated panel transport and workspace permissions. Use the installed DSH host's own package manager for plugin installation.
 
 See the [design notes](docs/design-notes.md), [rework design](docs/design/rework-orchestration.md), [dispatch and view acceptance](docs/reviews/acceptance/dispatch-views.md), and [Desktop acceptance](docs/reviews/acceptance/desktop.md). The 24-hour soak and 72-hour R0 observation are separate formal S6 checks. Short-window evidence, targeted regression results, and installation receipts are recorded for their own candidates. Release status follows the evidence for the same frozen candidate.
+
+## Provenance and acknowledgements
+
+This project references the design and implementation of [theBeautifulIce/dsh-orchestra v0.1.0-beta.1](https://github.com/theBeautifulIce/dsh-orchestra/releases/tag/v0.1.0-beta.1) and uses the same [PolyForm Noncommercial License 1.0.0](https://github.com/theBeautifulIce/dsh-orchestra/blob/v0.1.0-beta.1/LICENSE). Subsequent changes, new templates, and interface work are maintained in this repository. Copyright and license notices of the upstream project and its contributors continue to apply.
 
 ## License
 

@@ -10,7 +10,7 @@ DSH Orchestra 是 DeepSeek Harness（DSH）的工作流编排插件。你描述�
 - **调研与文档** · 按主题分工整理材料，汇总步骤引用已登记的上游成果。
 - **需要反复打磨的交付** · 先看报告和审核标准，发现问题就把具体意见交回产出步骤，修订后再看新版本。
 
-[快速开始](#快速开始) · [能力编排](#能力编排) · [架构](#架构) · [使用指南](#使用指南) · [开发与验收](#开发与验收) · [许可证](#许可证)
+[快速开始](#快速开始) · [能力编排](#能力编排) · [架构](#架构) · [使用指南](#使用指南) · [开发与验收](#开发与验收) · [来源与致谢](#来源与致谢) · [许可证](#许可证)
 
 ![Orchestra 桌面流程视图，显示并行复核、汇合和不同的步骤等待状态](docs/assets/readme/workflow.png)
 
@@ -219,6 +219,10 @@ node --no-warnings --test
 将输出的 `dsh-orchestra-*.tgz` 安装到选定的 DSH profile。Web 自管环境可用 `dsh plugin --profile web add <tgz 的绝对路径>`，再在该 profile 装配已认证的面板传输和工作区权限。已安装的 DSH 宿主按自己的依赖管理器安装插件包。
 
 查看 [设计说明](docs/design-notes.md)、[返工设计](docs/design/rework-orchestration.md)、[派单和视图验收](docs/reviews/acceptance/dispatch-views.md) 及 [桌面验收](docs/reviews/acceptance/desktop.md)。S6 的 24 小时浸泡和 72 小时 R0 观察是单独的正式验收项。短窗、局部回归或插件实装各自保留证据，发布状态以同一候选的验收记录为准。
+
+## 来源与致谢
+
+本项目在设计与实现上参考了 [theBeautifulIce/dsh-orchestra v0.1.0-beta.1](https://github.com/theBeautifulIce/dsh-orchestra/releases/tag/v0.1.0-beta.1)，并沿用其同款 [PolyForm Noncommercial License 1.0.0](https://github.com/theBeautifulIce/dsh-orchestra/blob/v0.1.0-beta.1/LICENSE)。后续修改、新增模板与界面工作由本仓库维护者负责。上游项目及其贡献者的版权与许可声明继续适用。
 
 ## 许可证
 
