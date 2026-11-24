@@ -2,11 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+	PANEL_TRANSPORT_SERVICE,
+	PANEL_TRANSPORT_VERSION,
+	authorizeToolUse,
 	authorizeWorkspace,
 	classifyProfile,
 	createLocalServiceManager,
+	createOrchestraPanelTransportService,
 	createWebPanelTransport,
 	createWebRequestAuthorizer,
+	installOrchestraPanelTransport,
 	isLoopbackHost,
 	webHostCapabilities
 } from "../lib/web-profile-host.js";
@@ -104,6 +109,28 @@ test("Web Profile：非授权请求被拒绝", () => {
 	assert.equal(wrongContent.ok, false);
 });
 
+test("Web Profile：请求授权返回宿主所有者身份，非 owner 被拒绝", () => {
+	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: HUMAN });
+	const verdict = authorizer.authorize(request());
+	assert.equal(verdict.ok, true);
+	assert.equal(verdict.principal.kind, "owner");
+	assert.equal(verdict.principal.id, HUMAN.id);
+	assert.equal(verdict.principal.source, "dsh-web-owner");
+	assert.equal(verdict.human.principal, verdict.principal);
+
+	const anonymous = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF });
+	assert.equal(anonymous.authorize(request()).status, 503);
+
+	const guest = createWebRequestAuthorizer({
+		webServer: WEB_SERVER,
+		proof: PROOF,
+		human: { ...HUMAN, principal: { kind: "guest", id: HUMAN.id } }
+	});
+	const denied = guest.authorize(request());
+	assert.equal(denied.ok, false);
+	assert.equal(denied.status, 403);
+});
+
 test("Web Profile：工作区授权失败被拒绝", () => {
 	const registry = {
 		archivedSessionIds: ["s_archived"],
@@ -173,12 +200,211 @@ test("Web Profile：服务数超限时拒绝新会话", async () => {
 });
 
 test("Web Profile：面板传输描述携带证明，缺认证时不带证明", () => {
-	const ready = createWebPanelTransport({ proof: PROOF });
+	const ready = createWebPanelTransport({ proof: PROOF, human: HUMAN });
+	assert.equal(ready.transport_version, PANEL_TRANSPORT_VERSION);
+	assert.equal(ready.profile, "web");
 	assert.equal(ready.route, "/api/orchestra.request");
+	assert.equal(ready.global, "__DSH_ORCHESTRA_WEB__");
 	assert.equal(ready.proof, PROOF);
+	assert.equal(ready.principal.kind, "owner");
+	assert.equal(ready.principal.id, HUMAN.id);
+	assert.equal(ready.tools.capability, "read_only");
 	assert.deepEqual(ready.missing_capabilities, []);
 
 	const incomplete = createWebPanelTransport({ missing: [{ code: "OPERATOR_AUTHENTICATION_REQUIRED", message: "需要认证" }] });
 	assert.equal(incomplete.proof, null);
+	assert.equal(incomplete.principal, null);
 	assert.equal(incomplete.missing_capabilities.length, 1);
+});
+
+test("Web Profile：面板传输服务只向宿主所有者页面下发证明", () => {
+	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: HUMAN });
+	const service = createOrchestraPanelTransportService({ human: HUMAN, proof: PROOF, authorizer });
+	assert.equal(service.version, PANEL_TRANSPORT_VERSION);
+	assert.equal(service.name, PANEL_TRANSPORT_SERVICE);
+	assert.equal(service.profile, "web");
+	assert.equal(service.route, "/api/orchestra.request");
+	assert.equal(service.global, "__DSH_ORCHESTRA_WEB__");
+
+	for (const peer of [void 0, { principal: { kind: "owner", id: HUMAN.id } }]) {
+		const transport = service.transportFor(peer);
+		assert.equal(transport.proof, PROOF);
+		assert.equal(transport.principal.kind, "owner");
+		assert.equal(transport.tools.capability, "read_only");
+	}
+
+	for (const peer of [{}, { principal: void 0 }, { principal: { kind: "guest", id: "u_guest" } }]) {
+		const restricted = service.transportFor(peer);
+		assert.equal(restricted.proof, null);
+		assert.equal(restricted.principal, null);
+		assert.ok(restricted.missing_capabilities.some((item) => item.code === "OPERATOR_AUTHENTICATION_REQUIRED"));
+	}
+
+	assert.equal(service.authorize(request()).ok, true);
+	assert.equal(service.authorize(request("/v1/tasks", { headers: { "x-orchestra-web-proof": "wrong" } })).ok, false);
+
+	const unconfigured = createOrchestraPanelTransportService({ human: HUMAN, proof: PROOF });
+	assert.equal(unconfigured.authorize(request()).status, 503);
+});
+
+test("Web Profile：orchestraPanelTransport 装配成功、重复冲突与能力不可用", () => {
+	const provided = [];
+	const ctx = {
+		provide(name, value) {
+			if (provided.length > 0) throw new Error(`${name} 已提供`);
+			provided.push([name, value]);
+			return () => {};
+		}
+	};
+	const service = createOrchestraPanelTransportService({ human: HUMAN, proof: PROOF });
+	const installed = installOrchestraPanelTransport(ctx, service);
+	assert.equal(installed.ok, true);
+	assert.equal(typeof installed.dispose, "function");
+	assert.equal(provided[0][0], PANEL_TRANSPORT_SERVICE);
+	assert.equal(provided[0][1], service);
+
+	const conflict = installOrchestraPanelTransport(ctx, service);
+	assert.equal(conflict.ok, false);
+	assert.equal(conflict.code, "PANEL_TRANSPORT_CONFLICT");
+
+	const unavailable = installOrchestraPanelTransport({}, service);
+	assert.equal(unavailable.ok, false);
+	assert.equal(unavailable.code, "PANEL_TRANSPORT_UNAVAILABLE");
+});
+
+test("Web Profile：工具授权只允许已登记的只读工具", () => {
+	const tools = new Map([
+		["workspace_read_sample", { capability: "read_only" }],
+		["workspace_write", { capability: "write" }]
+	]);
+	const registry = { lookup: (name) => tools.get(name) };
+
+	assert.deepEqual(authorizeToolUse({ registry, names: ["workspace_read_sample"] }), { ok: true, denied: [] });
+
+	const deniedWrite = authorizeToolUse({ registry, names: ["workspace_read_sample", "workspace_write"] });
+	assert.equal(deniedWrite.ok, false);
+	assert.equal(deniedWrite.code, "TOOL_NOT_ALLOWED");
+	assert.deepEqual(deniedWrite.denied, ["workspace_write"]);
+
+	const deniedUnknown = authorizeToolUse({ registry, names: ["missing"] });
+	assert.equal(deniedUnknown.ok, false);
+	assert.deepEqual(deniedUnknown.denied, ["missing"]);
+
+	const unavailable = authorizeToolUse({ names: ["workspace_read_sample"] });
+	assert.equal(unavailable.ok, false);
+	assert.equal(unavailable.code, "TOOL_AUTHORIZATION_UNAVAILABLE");
+	assert.deepEqual(unavailable.denied, ["workspace_read_sample"]);
+});
+
+test("Web Profile：宿主 apply 装配传输服务、证明路由与 owner 身份", async () => {
+	const { apply } = await import("../lib/index.js");
+	const routes = [];
+	const injected = [];
+	const effects = [];
+	const provided = new Map();
+	const webServer = {
+		host: "127.0.0.1",
+		register(spec) {
+			routes.push(spec);
+			return () => {};
+		}
+	};
+	const host = {
+		sessionController: { resolveAgent() {} },
+		workspaceRegistry: { get() {}, list() {}, archivedSessionIds: [] },
+		agents: { get() {} },
+		credentials: { modifyRecord() {} },
+		llm: {},
+		tools: { register() {} },
+		get(name) {
+			if (name === "webServer") return webServer;
+			if (name === "workspaceFiles") return { read() {}, list() {} };
+			return void 0;
+		},
+		on(event, handler) {
+			if (event === "webserver/index-inject") injected.push(handler);
+		},
+		provide(name, value) {
+			if (provided.has(name)) throw new Error(`${name} 已提供`);
+			provided.set(name, value);
+			return () => {};
+		},
+		effect(fn) {
+			effects.push(fn);
+		}
+	};
+	const ctx = {
+		get: (name) => name === "profileContext" ? { name: "web" } : void 0,
+		inject(_dependencies, callback) {
+			callback(host);
+		},
+		effect(fn) {
+			effects.push(fn);
+		}
+	};
+
+	apply(ctx, { local: {} });
+
+	const transport = provided.get(PANEL_TRANSPORT_SERVICE);
+	assert.ok(transport);
+	assert.equal(transport.profile, "web");
+	assert.deepEqual(transport.capabilities.missing, []);
+	assert.equal(injected.length, 1);
+
+	const ownerTable = [];
+	injected[0](ownerTable, { principal: { kind: "owner", id: HUMAN.id } });
+	assert.equal(ownerTable.length, 1);
+	assert.equal(ownerTable[0].kind, "global");
+	assert.equal(ownerTable[0].name, "__DSH_ORCHESTRA_WEB__");
+	assert.equal(ownerTable[0].value.transport_version, PANEL_TRANSPORT_VERSION);
+	assert.ok(ownerTable[0].value.proof);
+	assert.equal(ownerTable[0].value.principal.kind, "owner");
+
+	const guestTable = [];
+	injected[0](guestTable, { principal: { kind: "guest", id: "u_guest" } });
+	assert.equal(guestTable[0].value.proof, null);
+
+	assert.equal(routes.length, 1);
+	assert.equal(routes[0].kind, "exact");
+	assert.equal(routes[0].path, "/api/orchestra.request");
+
+	for (const fn of effects) {
+		const dispose = fn();
+		if (typeof dispose === "function") dispose();
+	}
+});
+
+test("Desktop Profile：不装配 Web 传输服务，继续使用本地面板路由", async () => {
+	const { apply } = await import("../lib/index.js");
+	const fetches = [];
+	const provided = new Map();
+	const host = {
+		sessionController: { resolveAgent() {} },
+		workspaceRegistry: { get() {}, list() {}, archivedSessionIds: [] },
+		agents: { get() {} },
+		credentials: { modifyRecord() {} },
+		llm: {},
+		tools: { register() {} },
+		connection: { fetch: { register(spec) { fetches.push(spec); return () => {}; } } },
+		get() {},
+		on() {},
+		effect() {}
+	};
+	const ctx = {
+		get: (name) => name === "profileContext" ? { name: "desktop" } : void 0,
+		inject(_dependencies, callback) {
+			callback(host);
+		},
+		provide(name, value) {
+			provided.set(name, value);
+			return () => {};
+		},
+		effect() {}
+	};
+
+	apply(ctx, { local: {} });
+
+	assert.equal(provided.has(PANEL_TRANSPORT_SERVICE), false);
+	assert.equal(fetches.length, 1);
+	assert.equal(fetches[0].path, "/api/orchestra.request");
 });
