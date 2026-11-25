@@ -13,10 +13,12 @@ import {
 	createWebRequestAuthorizer,
 	installOrchestraPanelTransport,
 	isLoopbackHost,
+	ownerPrincipal,
 	webHostCapabilities
 } from "../lib/web-profile-host.js";
 
 const HUMAN = { id: "local-dsh:tester" };
+const OWNER = { kind: "owner", id: HUMAN.id, source: "dsh-web-owner" };
 const PROOF = "proof-value-123";
 const SERVICES = {
 	sessionController: { resolveAgent() {} },
@@ -81,7 +83,7 @@ test("Web Profile：非本机监听且未配置认证时拒绝装配", () => {
 });
 
 test("Web Profile：非授权请求被拒绝", () => {
-	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: HUMAN });
+	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: { id: HUMAN.id, principal: OWNER } });
 	assert.equal(authorizer.authorize(request()).ok, true);
 	assert.equal(authorizer.authorize(request("/v1/tasks", { method: "POST", body: "{}" })).ok, true);
 
@@ -109,8 +111,48 @@ test("Web Profile：非授权请求被拒绝", () => {
 	assert.equal(wrongContent.ok, false);
 });
 
+test("Web Profile：owner 主体必须显式、来源可信且与宿主一致", () => {
+	assert.deepEqual(ownerPrincipal(OWNER, HUMAN.id), OWNER);
+	assert.equal(ownerPrincipal(OWNER, "local-dsh:other"), null);
+	assert.equal(ownerPrincipal(void 0, HUMAN.id), null);
+	assert.equal(ownerPrincipal(null, HUMAN.id), null);
+	assert.equal(ownerPrincipal({}, HUMAN.id), null);
+	assert.equal(ownerPrincipal({ kind: "guest", id: HUMAN.id }, HUMAN.id), null);
+	assert.equal(ownerPrincipal({ kind: "owner" }, HUMAN.id), null);
+	assert.equal(ownerPrincipal({ kind: "owner", id: "  " }, HUMAN.id), null);
+	assert.equal(ownerPrincipal({ kind: "owner", id: ` ${HUMAN.id}` }, HUMAN.id), null);
+	assert.deepEqual(ownerPrincipal({ kind: "owner", id: HUMAN.id }), { kind: "owner", id: HUMAN.id, source: "dsh-web-owner" });
+});
+
+test("Web Profile：缺少 peer、缺少 principal 或伪造 owner 都不下发管理权限", () => {
+	const service = createOrchestraPanelTransportService({ human: HUMAN, principal: OWNER, proof: PROOF });
+	assert.equal(service.transportFor({ principal: OWNER }).proof, PROOF);
+	assert.equal(service.transportFor({ principal: { kind: "owner", id: HUMAN.id } }).proof, PROOF);
+	assert.equal(service.transportFor(void 0).proof, null);
+	assert.equal(service.transportFor(null).proof, null);
+	assert.equal(service.transportFor({}).proof, null);
+	assert.equal(service.transportFor({ principal: void 0 }).proof, null);
+	assert.equal(service.transportFor({ principal: { kind: "owner", id: "u_forged" } }).proof, null);
+	assert.equal(service.transportFor({ principal: { kind: "guest", id: HUMAN.id } }).proof, null);
+	assert.equal(service.transportFor({ principal: { kind: "anonymous" } }).proof, null);
+
+	const missingPrincipal = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: HUMAN });
+	const unconfigured = missingPrincipal.authorize(request());
+	assert.equal(unconfigured.ok, false);
+	assert.equal(unconfigured.status, 503);
+
+	const forged = createWebRequestAuthorizer({
+		webServer: WEB_SERVER,
+		proof: PROOF,
+		human: { id: HUMAN.id, principal: { kind: "owner", id: "u_forged" } }
+	});
+	const forgedVerdict = forged.authorize(request());
+	assert.equal(forgedVerdict.ok, false);
+	assert.equal(forgedVerdict.status, 403);
+});
+
 test("Web Profile：请求授权返回宿主所有者身份，非 owner 被拒绝", () => {
-	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: HUMAN });
+	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: { id: HUMAN.id, principal: OWNER } });
 	const verdict = authorizer.authorize(request());
 	assert.equal(verdict.ok, true);
 	assert.equal(verdict.principal.kind, "owner");
@@ -200,7 +242,7 @@ test("Web Profile：服务数超限时拒绝新会话", async () => {
 });
 
 test("Web Profile：面板传输描述携带证明，缺认证时不带证明", () => {
-	const ready = createWebPanelTransport({ proof: PROOF, human: HUMAN });
+	const ready = createWebPanelTransport({ proof: PROOF, human: HUMAN, principal: OWNER });
 	assert.equal(ready.transport_version, PANEL_TRANSPORT_VERSION);
 	assert.equal(ready.profile, "web");
 	assert.equal(ready.route, "/api/orchestra.request");
@@ -211,6 +253,11 @@ test("Web Profile：面板传输描述携带证明，缺认证时不带证明", 
 	assert.equal(ready.tools.capability, "read_only");
 	assert.deepEqual(ready.missing_capabilities, []);
 
+	const noPrincipal = createWebPanelTransport({ proof: PROOF, human: HUMAN });
+	assert.equal(noPrincipal.proof, null);
+	assert.equal(noPrincipal.principal, null);
+	assert.ok(noPrincipal.missing_capabilities.some((item) => item.code === "OPERATOR_AUTHENTICATION_REQUIRED"));
+
 	const incomplete = createWebPanelTransport({ missing: [{ code: "OPERATOR_AUTHENTICATION_REQUIRED", message: "需要认证" }] });
 	assert.equal(incomplete.proof, null);
 	assert.equal(incomplete.principal, null);
@@ -218,22 +265,22 @@ test("Web Profile：面板传输描述携带证明，缺认证时不带证明", 
 });
 
 test("Web Profile：面板传输服务只向宿主所有者页面下发证明", () => {
-	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: HUMAN });
-	const service = createOrchestraPanelTransportService({ human: HUMAN, proof: PROOF, authorizer });
+	const authorizer = createWebRequestAuthorizer({ webServer: WEB_SERVER, proof: PROOF, human: { id: HUMAN.id, principal: OWNER } });
+	const service = createOrchestraPanelTransportService({ human: HUMAN, principal: OWNER, proof: PROOF, authorizer });
 	assert.equal(service.version, PANEL_TRANSPORT_VERSION);
 	assert.equal(service.name, PANEL_TRANSPORT_SERVICE);
 	assert.equal(service.profile, "web");
 	assert.equal(service.route, "/api/orchestra.request");
 	assert.equal(service.global, "__DSH_ORCHESTRA_WEB__");
 
-	for (const peer of [void 0, { principal: { kind: "owner", id: HUMAN.id } }]) {
+	for (const peer of [{ principal: OWNER }, { principal: { kind: "owner", id: HUMAN.id } }]) {
 		const transport = service.transportFor(peer);
 		assert.equal(transport.proof, PROOF);
 		assert.equal(transport.principal.kind, "owner");
 		assert.equal(transport.tools.capability, "read_only");
 	}
 
-	for (const peer of [{}, { principal: void 0 }, { principal: { kind: "guest", id: "u_guest" } }]) {
+	for (const peer of [void 0, null, {}, { principal: void 0 }, { principal: { kind: "guest", id: "u_guest" } }, { principal: { kind: "owner", id: "u_forged" } }]) {
 		const restricted = service.transportFor(peer);
 		assert.equal(restricted.proof, null);
 		assert.equal(restricted.principal, null);
@@ -245,6 +292,7 @@ test("Web Profile：面板传输服务只向宿主所有者页面下发证明", 
 
 	const unconfigured = createOrchestraPanelTransportService({ human: HUMAN, proof: PROOF });
 	assert.equal(unconfigured.authorize(request()).status, 503);
+	assert.equal(unconfigured.transportFor({ principal: OWNER }).proof, null);
 });
 
 test("Web Profile：orchestraPanelTransport 装配成功、重复冲突与能力不可用", () => {
@@ -298,6 +346,8 @@ test("Web Profile：工具授权只允许已登记的只读工具", () => {
 
 test("Web Profile：宿主 apply 装配传输服务、证明路由与 owner 身份", async () => {
 	const { apply } = await import("../lib/index.js");
+	const { userInfo } = await import("node:os");
+	const hostHuman = `local-dsh:${userInfo().username}`;
 	const routes = [];
 	const injected = [];
 	const effects = [];
@@ -352,13 +402,23 @@ test("Web Profile：宿主 apply 装配传输服务、证明路由与 owner 身�
 	assert.equal(injected.length, 1);
 
 	const ownerTable = [];
-	injected[0](ownerTable, { principal: { kind: "owner", id: HUMAN.id } });
+	injected[0](ownerTable, { principal: { kind: "owner", id: hostHuman } });
 	assert.equal(ownerTable.length, 1);
 	assert.equal(ownerTable[0].kind, "global");
 	assert.equal(ownerTable[0].name, "__DSH_ORCHESTRA_WEB__");
 	assert.equal(ownerTable[0].value.transport_version, PANEL_TRANSPORT_VERSION);
 	assert.ok(ownerTable[0].value.proof);
 	assert.equal(ownerTable[0].value.principal.kind, "owner");
+	assert.equal(ownerTable[0].value.principal.id, hostHuman);
+
+	const missingPeerTable = [];
+	injected[0](missingPeerTable);
+	assert.equal(missingPeerTable[0].value.proof, null);
+	assert.equal(missingPeerTable[0].value.principal, null);
+
+	const forgedTable = [];
+	injected[0](forgedTable, { principal: { kind: "owner", id: "u_forged" } });
+	assert.equal(forgedTable[0].value.proof, null);
 
 	const guestTable = [];
 	injected[0](guestTable, { principal: { kind: "guest", id: "u_guest" } });
