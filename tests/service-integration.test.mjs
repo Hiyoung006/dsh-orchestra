@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 import { serveOrchestra } from "../lib/index.js";
+import { createTypeScriptParserProvider } from "../lib/review-agent.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SECRET = "integration-secret-".padEnd(64, "x");
@@ -115,6 +116,32 @@ function seedReviewReport(dbFile, {
 			.run(reviewId, taskId, runId, 1, report.reviewer, report.reviewer_kind, reviewStatus, report.score, JSON.stringify(report), createdAt);
 	});
 	return report;
+}
+
+function seedWorkspace(dbFile, { taskId, realPath }) {
+	withDb(dbFile, (db) => {
+		db.prepare("INSERT INTO task_workspaces (workspace_id, task_id, kind, mode, source_root, real_path, allowed_root, status, created_at, updated_at) VALUES (?, ?, 'shared', 'readonly', ?, ?, ?, 'ready', ?, ?)")
+			.run(`ws_${taskId}`, taskId, realPath, realPath, realPath, NOW, NOW);
+	});
+}
+
+function reviewScanOptions(overrides = {}) {
+	const parser = createTypeScriptParserProvider();
+	return {
+		ast: parser.available ? { parse: parser.parse, engine: parser.engine } : null,
+		astAvailable: parser.available,
+		astReason: parser.available ? null : "ast_parser_unavailable",
+		advisoryProvider: async ({ components }) => components.map((item) => ({
+			vulnerability_id: "GHSA-test",
+			component: item.name,
+			version: item.version,
+			severity: "medium",
+			fixed_version: "9.9.9"
+		})),
+		advisoriesAvailable: true,
+		advisoriesReason: null,
+		...overrides
+	};
 }
 
 test("集成：创建编排板、任务、依赖、总览与时间线", async (t) => {
@@ -456,4 +483,96 @@ test("单元/边界：任务结果上报先解析结构，再按当前尝试裁�
 	withDb(join(dir, "service.sqlite"), (db) => {
 		assert.equal(db.prepare("SELECT COUNT(*) AS n FROM report_registry WHERE node_run_id = ?").get(nodeRunId).n, 1);
 	});
+});
+
+test("静态扫描：AST 与依赖漏洞写入审查记录，且不能放宽确定性结论", async (t) => {
+	const dir = tempDir();
+	const workspace = join(dir, "ws_scan");
+	mkdirSync(join(workspace, "src"), { recursive: true });
+	writeFileSync(join(workspace, "src", "app.js"), "eval('x');\n");
+	writeFileSync(join(workspace, "package-lock.json"), JSON.stringify({
+		lockfileVersion: 3,
+		packages: { "node_modules/lodash": { version: "4.17.20" } }
+	}));
+	const service = await serveOrchestra(options(dir, { reviewScan: reviewScanOptions() }));
+	t.after(async () => service.close());
+	seedTask(join(dir, "service.sqlite"), { taskId: "t_scan", lifecycle: "review", status: "succeeded", runId: "r_scan", runStatus: "succeeded", nodeStatus: "done" });
+	seedReviewReport(join(dir, "service.sqlite"), { taskId: "t_scan", runId: "r_scan" });
+	seedWorkspace(join(dir, "service.sqlite"), { taskId: "t_scan", realPath: workspace });
+
+	const before = await api(service, "/v1/tasks/acceptance?task_id=t_scan");
+	assert.equal(before.status, 200);
+	assert.equal(before.json.data.scan.available, true);
+	assert.equal(before.json.data.scan.ast.available, true);
+	assert.equal(before.json.data.scan.ast.engine, "typescript");
+	assert.equal(before.json.data.scan.dependencies.available, true);
+
+	const scanned = await api(service, "/v1/tasks/acceptance/scan", { method: "POST", body: { taskId: "t_scan" } });
+	assert.equal(scanned.status, 200);
+	const result = scanned.json.data;
+	assert.equal(result.ast.status, "ok");
+	assert.equal(result.dependencies.status, "ok");
+	assert.equal(result.dependencies.findings, 1);
+	assert.equal(result.reviewStatus, "fail");
+	assert.equal(result.reviewReport.approval_eligible, false);
+	assert.equal(result.reviewReport.trigger.requested_by, HUMAN.id);
+	assert.equal(result.reviewReport.parent_review_id, "rv_det");
+	assert.equal(result.reviewReport.dependencies.findings[0].vulnerability_id, "GHSA-test");
+	assert.equal(result.reviewReport.dependencies.findings[0].fixed_version, "9.9.9");
+	withDb(join(dir, "service.sqlite"), (db) => {
+		assert.equal(db.prepare("SELECT COUNT(*) AS n FROM review_reports WHERE task_id = ?").get("t_scan").n, 2);
+		const latest = db.prepare("SELECT report_json FROM review_reports WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get("t_scan");
+		const report = JSON.parse(latest.report_json);
+		assert.equal(report.staticAnalysis.status, "ok");
+		assert.equal(report.dependencies.status, "ok");
+		assert.equal(report.checks.staticAnalysis >= 1, true);
+		assert.equal(report.checks.dependencyScan, 1);
+	});
+});
+
+test("静态扫描：未配置时明确不可用并拒绝触发", async (t) => {
+	const dir = tempDir();
+	const service = await serveOrchestra(options(dir));
+	t.after(async () => service.close());
+	seedTask(join(dir, "service.sqlite"), { taskId: "t_scan_off", lifecycle: "review", status: "succeeded", runId: "r_scan_off", runStatus: "succeeded", nodeStatus: "done" });
+	seedReviewReport(join(dir, "service.sqlite"), { taskId: "t_scan_off", runId: "r_scan_off" });
+
+	const before = await api(service, "/v1/tasks/acceptance?task_id=t_scan_off");
+	assert.equal(before.status, 200);
+	assert.equal(before.json.data.scan.available, false);
+	assert.equal(before.json.data.scan.ast.available, false);
+	assert.equal(before.json.data.scan.dependencies.available, false);
+
+	const rejected = await api(service, "/v1/tasks/acceptance/scan", { method: "POST", body: { taskId: "t_scan_off" } });
+	assert.equal(rejected.status, 503);
+	assert.equal(rejected.json.error.code, "SERVICE_UNAVAILABLE");
+	withDb(join(dir, "service.sqlite"), (db) => {
+		assert.equal(db.prepare("SELECT COUNT(*) AS n FROM review_reports WHERE task_id = ?").get("t_scan_off").n, 1);
+	});
+});
+
+test("静态扫描：扫描失败不能被当作通过", async (t) => {
+	const dir = tempDir();
+	const workspace = join(dir, "ws_scan_fail");
+	mkdirSync(join(workspace, "src"), { recursive: true });
+	writeFileSync(join(workspace, "src", "app.js"), "export const ok = 1;\n");
+	writeFileSync(join(workspace, "package-lock.json"), JSON.stringify({
+		lockfileVersion: 3,
+		packages: { "node_modules/lodash": { version: "4.17.20" } }
+	}));
+	const service = await serveOrchestra(options(dir, {
+		reviewScan: reviewScanOptions({ advisoryProvider: async () => { throw new Error("advisory offline"); } })
+	}));
+	t.after(async () => service.close());
+	seedTask(join(dir, "service.sqlite"), { taskId: "t_scan_fail", lifecycle: "review", status: "succeeded", runId: "r_scan_fail", runStatus: "succeeded", nodeStatus: "done" });
+	seedReviewReport(join(dir, "service.sqlite"), { taskId: "t_scan_fail", runId: "r_scan_fail" });
+	seedWorkspace(join(dir, "service.sqlite"), { taskId: "t_scan_fail", realPath: workspace });
+
+	const scanned = await api(service, "/v1/tasks/acceptance/scan", { method: "POST", body: { taskId: "t_scan_fail" } });
+	assert.equal(scanned.status, 200);
+	assert.equal(scanned.json.data.ast.status, "ok");
+	assert.equal(scanned.json.data.dependencies.status, "failed");
+	assert.equal(scanned.json.data.reviewStatus, "need_evidence");
+	assert.equal(scanned.json.data.reviewReport.approval_eligible, false);
+	assert.equal(scanned.json.data.reviewReport.checks.dependencyScan, "failed");
 });

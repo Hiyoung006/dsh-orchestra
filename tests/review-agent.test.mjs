@@ -12,9 +12,12 @@ import {
 	ReviewTriggerError,
 	analyzeAst,
 	buildLlmEvidence,
+	createOsvAdvisoryProvider,
+	createTypeScriptParserProvider,
 	detectSecrets,
 	latestReviewReport,
 	mergeLlmReview,
+	mergeScanResults,
 	persistReviewReport,
 	reportRemediation,
 	reviewAllowsAcceptance,
@@ -22,7 +25,9 @@ import {
 	runIndependentReview,
 	runIndependentReviewWithLlm,
 	runManualLlmReview,
-	runSastScan
+	runSastScan,
+	scanDependencyVulnerabilities,
+	scanDependencyVulnerabilitiesAsync
 } from "../lib/review-agent.js";
 
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), "..", "lib", "infra", "sqlite", "migrations");
@@ -563,4 +568,124 @@ test("人工 LLM Review 不可用或不可解析时保持原结论并阻断自�
 	const failedReport = mergeLlmReview({ ...report, reviewStatus: "fail" }, { available: true, blocking: false, engine: "independent_llm" });
 	assert.equal(failedReport.reviewStatus, "fail");
 	assert.equal(reviewAllowsAcceptance(failedReport), false);
+});
+
+test("AST 正式 Parser：TypeScript 解析源码，解析失败不能当作通过", () => {
+	const parser = createTypeScriptParserProvider();
+	assert.equal(parser.available, true);
+	assert.equal(parser.engine, "typescript");
+	assert.equal(typeof parser.parse, "function");
+
+	const found = analyzeAst({ files: [{ path: "src/app.ts", text: "const n: number = 1;\neval('1');\n" }], parse: parser.parse });
+	assert.equal(found.status, "ok");
+	assert.equal(found.engine, "typescript");
+	assert.ok(found.findings.some((item) => item.rule === "ast_dynamic_code_execution"));
+
+	const broken = analyzeAst({ files: [{ path: "src/broken.ts", text: "function (" }], parse: parser.parse });
+	assert.equal(broken.status, "failed");
+	assert.equal(broken.available, true);
+	assert.equal(broken.findings.length, 0);
+});
+
+test("依赖扫描：锁文件解析组件与版本，未配置/失败/成功严格区分", async () => {
+	const lock = JSON.stringify({
+		lockfileVersion: 3,
+		packages: {
+			"": { name: "app", version: "1.0.0" },
+			"node_modules/lodash": { version: "4.17.20" }
+		}
+	});
+	const files = [{ path: "package-lock.json", text: lock }];
+
+	const unconfigured = await scanDependencyVulnerabilitiesAsync({ files });
+	assert.equal(unconfigured.status, "unconfigured");
+	assert.equal(unconfigured.available, false);
+	assert.equal(unconfigured.reason, "advisory_provider_not_configured");
+
+	const failed = await scanDependencyVulnerabilitiesAsync({ files, advisoryProvider: async () => { throw new Error("offline"); } });
+	assert.equal(failed.status, "failed");
+	assert.equal(failed.available, false);
+
+	const ok = await scanDependencyVulnerabilitiesAsync({
+		files,
+		advisoryProvider: async ({ components }) => components.filter((item) => item.name === "lodash").map((item) => ({
+			vulnerability_id: "GHSA-test",
+			component: item.name,
+			version: item.version,
+			severity: "high",
+			fixed_version: "4.17.21"
+		}))
+	});
+	assert.equal(ok.status, "ok");
+	assert.equal(ok.available, true);
+	assert.equal(ok.components.find((item) => item.name === "lodash")?.version, "4.17.20");
+	assert.equal(ok.findings[0].vulnerability_id, "GHSA-test");
+	assert.equal(ok.findings[0].fixed_version, "4.17.21");
+
+	const sync = scanDependencyVulnerabilities({ files, advisoryProvider: () => [] });
+	assert.equal(sync.status, "ok");
+	assert.equal(sync.counts.components, 1);
+	assert.equal(sync.components[0].name, "lodash");
+});
+
+test("OSV Advisory Provider：映射漏洞编号、严重程度与修复建议", async () => {
+	const requested = [];
+	const provider = createOsvAdvisoryProvider({
+		baseUrl: "https://osv.test",
+		timeoutMs: 2000,
+		fetch: async (url) => {
+			requested.push(url);
+			if (url.endsWith("/v1/querybatch")) return { ok: true, status: 200, json: async () => ({ results: [{ vulns: [{ id: "GHSA-test" }] }] }) };
+			if (url.includes("/v1/vulns/GHSA-test")) return {
+				ok: true,
+				status: 200,
+				json: async () => ({
+					id: "GHSA-test",
+					summary: "prototype pollution",
+					database_specific: { severity: "HIGH" },
+					affected: [{ package: { name: "lodash" }, ranges: [{ events: [{ introduced: "0" }, { fixed: "4.17.21" }] }] }]
+				})
+			};
+			return { ok: false, status: 404, json: async () => ({}) };
+		}
+	});
+	const findings = await provider({ components: [{ name: "lodash", version: "4.17.20" }] });
+	assert.equal(findings.length, 1);
+	assert.equal(findings[0].vulnerability_id, "GHSA-test");
+	assert.equal(findings[0].severity, "high");
+	assert.equal(findings[0].fixed_version, "4.17.21");
+	assert.ok(findings[0].remediation.includes("4.17.21"));
+	assert.ok(requested.some((url) => url.endsWith("/v1/querybatch")));
+});
+
+test("扫描结果并入报告：只收紧结论，未执行或失败不能算通过", () => {
+	const report = { review_id: "rv_base", reviewStatus: "pass", score: 90, checks: {}, suggestions: [] };
+	const unconfigured = mergeScanResults(report, {
+		staticAnalysis: { status: "unconfigured", findings: [] },
+		dependencies: { status: "unconfigured", findings: [] },
+		requestedBy: "local-dsh:tester",
+		now: NOW
+	});
+	assert.equal(unconfigured.checks.staticAnalysis, "unconfigured");
+	assert.equal(unconfigured.checks.dependencyScan, "unconfigured");
+	assert.equal(unconfigured.approval_eligible, false);
+	assert.equal(unconfigured.parent_review_id, "rv_base");
+
+	const failed = mergeScanResults(report, {
+		staticAnalysis: { status: "failed", findings: [] },
+		dependencies: { status: "ok", findings: [] },
+		requestedBy: "local-dsh:tester",
+		now: NOW
+	});
+	assert.equal(failed.reviewStatus, "need_evidence");
+
+	const blocked = mergeScanResults(report, {
+		staticAnalysis: { status: "ok", findings: [{ rule: "ast_x", severity: "high", detail: "危险调用" }] },
+		dependencies: { status: "ok", findings: [] },
+		requestedBy: "local-dsh:tester",
+		now: NOW
+	});
+	assert.equal(blocked.reviewStatus, "fail");
+	assert.equal(blocked.score <= 50, true);
+	assert.equal(blocked.approval_eligible, false);
 });
