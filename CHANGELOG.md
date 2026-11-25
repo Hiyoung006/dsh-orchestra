@@ -2,7 +2,7 @@
 
 本文件记录 DSH Orchestra 插件包的用户可见变更。版本号与 [`package.json`](package.json) 一致。
 
-## 0.1.0-beta.3 — 开发中（M0）
+## 0.1.0-beta.3 — 开发中
 
 ### 工程
 
@@ -10,6 +10,10 @@
 - 新增 `pnpm-lock.yaml` 与 `pnpm-workspace.yaml`，关闭 peer 自动安装，不拉取或升级 DSH 宿主依赖。
 - 新增可复现打包：双次 `pnpm pack` 比对、SHA256、CycloneDX SBOM 和关联 Git commit 的 `build-info.json`。
 - 新增 GitHub Actions：Type Check、Unit Test、Integration Test、Security Test、Build、Package Integrity。
+- 发布包新增文件级清单 `package-files.json`，记录每个成员的大小与 SHA256；完整性校验逐项复核，并与锁文件、SBOM、Git 提交交叉核对。
+- `dist/` 只允许保留发布包、校验文件与清单，出现未登记文件即校验失败。
+- CI 新增 Dependency Review 作业，PR 引入高危依赖时直接阻断；构建产物保留 14 天。
+- 新增标签发布流水线：运行 `pnpm check`、生成 SLSA 来源证明，并将包、`SHA256SUMS`、`build-info.json`、SBOM 与文件清单上传到 GitHub Release。
 
 ### 安全
 

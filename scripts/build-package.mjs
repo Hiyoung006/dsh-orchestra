@@ -24,14 +24,20 @@ function tarballFiles(path) {
 	return run("tar", ["-tzf", path]).split("\n").filter(Boolean).sort();
 }
 
-function tarballContentHashes(path, files) {
-	const digest = createHash("sha256");
+function tarballManifest(path, files) {
+	const manifest = [];
 	for (const file of files) {
 		if (file.endsWith("/")) continue;
 		const content = spawnSync("tar", ["-xOzf", path, file], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
 		if (content.status !== 0) throw new Error(`无法读取 tarball 成员 ${file}`);
-		digest.update(file).update("\0").update(content.stdout).update("\0");
+		manifest.push({ path: file, bytes: content.stdout.length, sha256: createHash("sha256").update(content.stdout).digest("hex") });
 	}
+	return manifest;
+}
+
+function manifestDigest(manifest) {
+	const digest = createHash("sha256");
+	for (const entry of manifest) digest.update(`${entry.path}\0${entry.bytes}\0${entry.sha256}\n`);
 	return digest.digest("hex");
 }
 
@@ -77,11 +83,11 @@ function writeSbom(lockfileSha256) {
 	return components.length;
 }
 
-rmSync(DIST, { recursive: true, force: true });
-mkdirSync(REPEAT, { recursive: true });
-
 const dirty = run("git", ["status", "--porcelain"]).length > 0;
 if (dirty && process.env.CI !== "true") console.warn("警告：工作区不干净，build-info 会标记 dirty=true。");
+
+rmSync(DIST, { recursive: true, force: true });
+mkdirSync(REPEAT, { recursive: true });
 const commit = process.env.GITHUB_SHA || run("git", ["rev-parse", "HEAD"]);
 const lockfilePath = join(ROOT, "pnpm-lock.yaml");
 if (!existsSync(lockfilePath)) throw new Error("缺少 pnpm-lock.yaml，无法生成可复现包");
@@ -98,7 +104,9 @@ const repeatedPath = join(REPEAT, repeated);
 
 const files = tarballFiles(tarballPath);
 const repeatedFiles = tarballFiles(repeatedPath);
-const identical = JSON.stringify(files) === JSON.stringify(repeatedFiles) && tarballContentHashes(tarballPath, files) === tarballContentHashes(repeatedPath, repeatedFiles);
+const manifest = tarballManifest(tarballPath, files);
+const repeatedManifest = tarballManifest(repeatedPath, repeatedFiles);
+const identical = JSON.stringify(files) === JSON.stringify(repeatedFiles) && manifestDigest(manifest) === manifestDigest(repeatedManifest);
 if (!identical) throw new Error("两次打包的文件清单或内容不一致，构建不可复现");
 
 const required = ["package/package.json", "package/lib/index.js", "package/lib/client.js", "package/cordis.patch.yml", "package/README.md", "package/LICENSE", "package/CHANGELOG.md"];
@@ -109,9 +117,16 @@ for (const entry of files) {
 }
 
 const tarballSha256 = sha256File(tarballPath);
+const packageFiles = {
+	schema_version: 1,
+	tarball: tarballName,
+	tarball_sha256: tarballSha256,
+	files: manifest
+};
+writeFileSync(join(DIST, "package-files.json"), `${JSON.stringify(packageFiles, null, 2)}\n`);
 const sbomComponents = writeSbom(lockfileSha256);
 const buildInfo = {
-	schema_version: 1,
+	schema_version: 2,
 	name: pkg.name,
 	version: pkg.version,
 	commit,
@@ -124,6 +139,11 @@ const buildInfo = {
 	tarball_sha256: tarballSha256,
 	sbom: "sbom.cdx.json",
 	sbom_components: sbomComponents,
+	package_files: {
+		manifest: "package-files.json",
+		count: manifest.length,
+		sha256: manifestDigest(manifest)
+	},
 	reproducibility: {
 		packs: 2,
 		files: files.length,

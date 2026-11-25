@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: "true"
+
+jobs:
+  release:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.4
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Resolve package metadata
+        run: |
+          node -e "const i=require('./dist/build-info.json');console.log('TARBALL='+i.tarball)" >> "$GITHUB_ENV"
+          node -e "const i=require('./dist/build-info.json');console.log('SHA256='+i.tarball_sha256)" >> "$GITHUB_ENV"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/${{ env.TARBALL }}
+      - name: Publish GitHub release
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}" \
+            "dist/${TARBALL}" \
+            dist/SHA256SUMS \
+            dist/build-info.json \
+            dist/sbom.cdx.json \
+            dist/package-files.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

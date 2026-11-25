@@ -216,7 +216,9 @@ pnpm pack --pack-destination .tmp/packages
 node --no-warnings --test
 ~~~
 
-测试覆盖任务生命周期、依赖与环路、JSON/SQLite 持久化和并发写入、验收规则、工作区隔离、服务 API 集成、重启恢复，以及认证、路径穿越、符号链接逃逸、敏感信息与 XSS 输出检查。发布变更见 [更新日志](CHANGELOG.md)，升级、备份与降级流程见 [升级与降级说明](docs/upgrade-downgrade.md)。
+测试覆盖任务生命周期、依赖与环路、JSON/SQLite 持久化和并发写入、验收规则、工作区隔离、服务 API 集成、重启恢复、预算预留与成本中断，以及认证、路径穿越、符号链接逃逸、敏感信息与 XSS 输出检查。发布变更见 [更新日志](CHANGELOG.md)，升级、备份与降级流程见 [升级与降级说明](docs/upgrade-downgrade.md)。
+
+`pnpm build` 在 `dist/` 生成 tarball、`SHA256SUMS`、CycloneDX SBOM、`build-info.json` 和文件级清单 `package-files.json`；`pnpm verify:package` 会逐项复核成员摘要，并交叉核对锁文件、SBOM 与 Git 提交。推送 `v*` 标签会触发发布流水线：先执行完整检查，再生成 SLSA 来源证明，并把上述产物上传到 GitHub Release。
 
 将输出的 `dsh-orchestra-*.tgz` 安装到选定的 DSH profile。Web 自管环境可用 `dsh plugin --profile web add <tgz 的绝对路径>`，再在该 profile 装配已认证的面板传输和工作区权限。已安装的 DSH 宿主按自己的依赖管理器安装插件包。
 
