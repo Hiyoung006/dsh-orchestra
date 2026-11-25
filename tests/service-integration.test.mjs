@@ -88,6 +88,35 @@ function seedTask(dbFile, { taskId, lifecycle = "draft", status = "reserved", ru
 	});
 }
 
+function seedReviewReport(dbFile, {
+	taskId, runId, reviewId = "rv_det", reviewStatus = "pass", createdAt = NOW
+} = {}) {
+	const report = {
+		schema_version: 1,
+		review_id: reviewId,
+		task_id: taskId,
+		run_id: runId,
+		criteria_version: 1,
+		reviewer: "independent-review-agent:v1",
+		reviewer_kind: "independent_agent",
+		reviewStatus,
+		score: reviewStatus === "pass" ? 92 : 10,
+		passedCriteria: [],
+		failedCriteria: [],
+		missingEvidence: [],
+		securityIssues: [],
+		resultKinds: {},
+		checks: { aiReview: "disabled" },
+		llm: { configured: false, model: null },
+		created_at: createdAt
+	};
+	withDb(dbFile, (db) => {
+		db.prepare("INSERT INTO review_reports (review_id, task_id, run_id, criteria_version, reviewer, reviewer_kind, review_status, score, report_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			.run(reviewId, taskId, runId, 1, report.reviewer, report.reviewer_kind, reviewStatus, report.score, JSON.stringify(report), createdAt);
+	});
+	return report;
+}
+
 test("集成：创建编排板、任务、依赖、总览与时间线", async (t) => {
 	const dir = tempDir();
 	const service = await serveOrchestra(options(dir));
@@ -216,6 +245,80 @@ test("集成：人工验收驳回、禁止改判、驳回后重做", async (t) =
 	const timeline = await api(service, "/v1/tasks/timeline?task_id=t_review");
 	assert.ok(timeline.json.data.events.some((event) => event.title === "review → rejected"));
 	assert.ok(timeline.json.data.events.some((event) => event.kind === "retry"));
+});
+
+test("集成：LLM Review 未配置时公开不可用并拒绝触发", async (t) => {
+	const dir = tempDir();
+	const service = await serveOrchestra(options(dir));
+	t.after(async () => service.close());
+	seedTask(join(dir, "service.sqlite"), { taskId: "t_llm_off", lifecycle: "review", status: "succeeded", runId: "r_llm_off", runStatus: "succeeded", nodeStatus: "done" });
+	seedReviewReport(join(dir, "service.sqlite"), { taskId: "t_llm_off", runId: "r_llm_off" });
+
+	const acceptance = await api(service, "/v1/tasks/acceptance?task_id=t_llm_off");
+	assert.equal(acceptance.status, 200);
+	assert.equal(acceptance.json.data.review.available, false);
+	assert.equal(acceptance.json.data.review.reason, "llm_review_disabled");
+
+	const triggered = await api(service, "/v1/tasks/acceptance/review", { method: "POST", body: { taskId: "t_llm_off" } });
+	assert.equal(triggered.status, 503);
+	assert.equal(triggered.json.error.code, "SERVICE_UNAVAILABLE");
+	withDb(join(dir, "service.sqlite"), (db) => {
+		assert.equal(db.prepare("SELECT COUNT(*) AS n FROM review_reports WHERE task_id = 't_llm_off'").get().n, 1);
+	});
+});
+
+test("集成：人工触发 LLM Review 记录结果且不能放宽确定性结论", async (t) => {
+	const dir = tempDir();
+	let calls = 0;
+	const service = await serveOrchestra(options(dir, {
+		reviewLlm: {
+			enabled: true,
+			provider: "test-provider",
+			model: "test-reviewer",
+			timeoutMs: 5000,
+			async complete({ system, user, model }) {
+				calls += 1;
+				assert.equal(model, "test-reviewer");
+				assert.ok(system.includes("只读证据"));
+				const evidence = JSON.parse(user);
+				assert.equal(evidence.constraints.read_only, true);
+				assert.equal(evidence.constraints.workspace_mounted, false);
+				return JSON.stringify({
+					correctness: { status: "pass", summary: "看起来正确" },
+					security: { status: "pass" },
+					score: 100
+				});
+			}
+		}
+	}));
+	t.after(async () => service.close());
+	seedTask(join(dir, "service.sqlite"), { taskId: "t_llm_on", lifecycle: "review", status: "succeeded", runId: "r_llm_on", runStatus: "succeeded", nodeStatus: "done" });
+	seedReviewReport(join(dir, "service.sqlite"), { taskId: "t_llm_on", runId: "r_llm_on", reviewStatus: "fail" });
+
+	const acceptance = await api(service, "/v1/tasks/acceptance?task_id=t_llm_on");
+	assert.equal(acceptance.json.data.review.available, true);
+	assert.equal(acceptance.json.data.review.provider, "test-provider");
+	assert.equal(acceptance.json.data.review.model, "test-reviewer");
+
+	const triggered = await api(service, "/v1/tasks/acceptance/review", { method: "POST", body: { taskId: "t_llm_on" } });
+	assert.equal(triggered.status, 200);
+	assert.equal(triggered.json.data.available, true);
+	assert.equal(triggered.json.data.model, "test-reviewer");
+	// 模型给出满分也不能把确定性 fail 改为 pass。
+	assert.equal(triggered.json.data.reviewStatus, "fail");
+	assert.equal(triggered.json.data.reviewReport.approval_eligible, false);
+	assert.equal(triggered.json.data.reviewReport.llm.model, "test-reviewer");
+	assert.equal(triggered.json.data.reviewReport.trigger.requested_by, HUMAN.id);
+	assert.equal(triggered.json.data.reviewReport.parent_review_id, "rv_det");
+	assert.equal(calls, 1);
+
+	const after = await api(service, "/v1/tasks/acceptance?task_id=t_llm_on");
+	assert.equal(after.json.data.reviewReport.review_id, triggered.json.data.review_id);
+	assert.equal(after.json.data.reviewReport.llmReview.available, true);
+	assert.equal(after.json.data.reviewReport.llm.configured, true);
+	withDb(join(dir, "service.sqlite"), (db) => {
+		assert.equal(db.prepare("SELECT COUNT(*) AS n FROM review_reports WHERE task_id = 't_llm_on'").get().n, 2);
+	});
 });
 
 test("集成：任务取消与未授权操作", async (t) => {
