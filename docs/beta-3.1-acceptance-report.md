@@ -25,7 +25,10 @@
 
 - 类型/语法检查：35 个 JS 文件通过，公开导出与声明文件完整。
 - 测试：187 项，通过 186，失败 0，跳过 1。
-  - 跳过项：`tests/execution-sandbox.test.mjs` 中的真实网络出口测试，需显式设置 `DSH_TEST_NETWORK_EGRESS=1` 且宿主机 Docker daemon 可用。**本次检查环境 Docker daemon 不可用，该项未执行，不能计为通过。**
+  - 跳过项：`tests/execution-sandbox.test.mjs` 中的真实网络出口测试，需显式设置 `DSH_TEST_NETWORK_EGRESS=1` 且宿主机 Docker daemon 可用。
+  - **补跑结果（2026-11-25）**：启动 Docker Desktop 后，使用
+    `DSH_TEST_NETWORK_EGRESS=1 DOCKER_HOST=unix:///Users/young/.docker/run/docker.sock node --no-warnings --test tests/execution-sandbox.test.mjs`
+    执行，21 项全部通过（0 失败、0 跳过，耗时 22.5s）。真实网络用例验证了固定域名写入 `/etc/hosts` 可解析、未固定域名无法通过外部 DNS 解析。
 - 打包：两次 `pnpm pack` 内容一致（可复现），tarball SHA256 `4192af41…81b6`，104 个文件，`verify:package` 通过。
 - 关键回归：
   - Web Profile：缺失 peer、缺失 principal、伪造身份、anonymous/guest 均被拒绝。
@@ -56,7 +59,7 @@ node --no-warnings scripts/r0-observe.mjs verify-report .r0/beta3.1-c912a60/repo
 
 ## 4. 未解决风险
 
-1. **真实网络隔离未在本机验证**：Docker daemon 不可用，出口白名单测试被跳过。需在具备 Docker 的环境执行 `DSH_TEST_NETWORK_EGRESS=1 pnpm test:sandbox` 并保留输出。
+1. **真实网络隔离已验证，但依赖 Docker Desktop 上下文**：默认 `/var/run/docker.sock` 未运行，补跑时通过 `DOCKER_HOST=unix:///Users/young/.docker/run/docker.sock` 指向 Docker Desktop。CI 或其它主机需确保 daemon 可用后以 `DSH_TEST_NETWORK_EGRESS=1` 重跑，否则该项仍会被跳过而不能计为通过。
 2. **72 小时观察尚未完成**：当前只有运行中的现场，未生成签名验收报告；期间若宿主机休眠、进程被杀或磁盘不足，观察应判为失败并重新运行。
 3. **出口控制依赖容器 DNS 与代理配合**：无代理时仅支持 pinned 域名；未 pin 的通配域名一律拒绝，可能影响依赖多域名的任务，需要在真实任务中逐步放行。
 4. **OSV 依赖扫描依赖外网**：`api.osv.dev` 不可达时会标记 `failed`（不会判通过），需要离线镜像时另配 Advisory Provider。
