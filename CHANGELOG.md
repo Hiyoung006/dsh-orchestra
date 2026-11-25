@@ -14,6 +14,8 @@
 - `dist/` 只允许保留发布包、校验文件与清单，出现未登记文件即校验失败。
 - CI 新增 Dependency Review 作业，PR 引入高危依赖时直接阻断；构建产物保留 14 天。
 - 新增标签发布流水线：运行 `pnpm check`、生成 SLSA 来源证明，并将包、`SHA256SUMS`、`build-info.json`、SBOM 与文件清单上传到 GitHub Release。
+- 新增 R0 观察 harness `scripts/r0-observe.mjs`：从候选包启动 S6 合成宿主，记录候选、包摘要、真实时间、单调计时、账本水位与只读工作区摘要，支持 `launch`、`status`、`verify`、`cancel` 和短时 dry-run。
+- R0 核验器复算采样槽，拒绝时间或单调计时回退、采样缺口、工作区变化、候选漂移、离开 R0 和失败终态。72 小时正式观察与 24 小时浸泡仍是独立验收项。
 
 ### 安全
 

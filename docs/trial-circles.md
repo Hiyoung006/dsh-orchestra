@@ -19,12 +19,13 @@
 
 ## 本地 R0 运行与交接
 
-在冻结源码的干净工作树中，指定其 `tmp` 下尚不存在的新目录、候选完整提交和同一份已验安装包。脚本从包启动 S6，只开放临时合成工作区，按分钟实际执行只读任务。它单独运行 72 小时，T09 的 24 小时浸泡使用另外的账本和进程。
+在冻结源码的干净工作树中，指定其 `tmp` 下尚不存在的新目录、候选完整提交和同一份已验安装包。脚本解出候选包并从中启动 S6，只开放临时合成工作区，按固定间隔记录真实时间、单调计时、账本水位与工作区摘要。默认运行 72 小时，T09 的 24 小时浸泡使用另外的账本和进程。
 
 ```powershell
-node --no-warnings scripts/r0-observe.ts launch <新目录> <完整候选提交> <候选包.tgz> <包SHA256>
-node --no-warnings scripts/r0-observe.ts status <观察目录>
-node --no-warnings scripts/r0-observe.ts verify <已结束的观察目录>
+node --no-warnings scripts/r0-observe.mjs launch <新目录> <完整候选提交> <候选包.tgz> <包SHA256>
+node --no-warnings scripts/r0-observe.mjs status <观察目录>
+node --no-warnings scripts/r0-observe.mjs verify <已结束的观察目录>
+node --no-warnings scripts/r0-observe.mjs cancel <观察目录>
 ```
 
-状态包含进程及当前采样。需要中止时用 `cancel <观察目录>` 保留现场，下一次观察使用新目录。结束后保留 launch.json、worker.json、samples.ndjson、end.json、ledger.db、soak-config.json 和 workspace/sample.txt。核验器按真实时间、单调计时和原账本复算每个采样槽。值班人员另外归档实际覆盖时段、告警、事故分级、前置门及回退核验记录，在 R0 现场评定中确认是否出现 P1。
+短时 dry-run 用 `--seconds 60 --sample-seconds 5` 缩短观察窗口，只验证解包、S6 启动、R0 绑定、账本写入、合成工作区只读与采样核验链路；它不代替 72 小时正式观察，也不执行正式合成负载。状态包含进程及当前采样。需要中止时用 `cancel` 保留现场，下一次观察使用新目录。结束后保留 launch.json、worker.json、samples.ndjson、end.json、ledger.db、soak-config.json 和 workspace/sample.txt。`verify` 按真实时间、单调计时、采样间隔和原账本复算每个采样槽，并核对工作区摘要未变、候选未变、仍处 R0。值班人员另外归档实际覆盖时段、告警、事故分级、前置门及回退核验记录，在 R0 现场评定中确认是否出现 P1。

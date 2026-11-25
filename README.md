@@ -220,6 +220,13 @@ node --no-warnings --test
 
 `pnpm build` 在 `dist/` 生成 tarball、`SHA256SUMS`、CycloneDX SBOM、`build-info.json` 和文件级清单 `package-files.json`；`pnpm verify:package` 会逐项复核成员摘要，并交叉核对锁文件、SBOM 与 Git 提交。推送 `v*` 标签会触发发布流水线：先执行完整检查，再生成 SLSA 来源证明，并把上述产物上传到 GitHub Release。
 
+R0 观察 harness 从候选包启动 S6 合成宿主并按间隔采样。短时 dry-run 可用 `--seconds` 缩短窗口，完整 72 小时观察另行排期：
+
+~~~powershell
+node --no-warnings scripts/r0-observe.mjs launch <新目录> <完整候选提交> <候选包.tgz> <包SHA256> --seconds 60 --sample-seconds 5
+node --no-warnings scripts/r0-observe.mjs verify <观察目录>
+~~~
+
 将输出的 `dsh-orchestra-*.tgz` 安装到选定的 DSH profile。Web 自管环境可用 `dsh plugin --profile web add <tgz 的绝对路径>`，再在该 profile 装配已认证的面板传输和工作区权限。已安装的 DSH 宿主按自己的依赖管理器安装插件包。
 
 查看 [设计说明](docs/design-notes.md)、[返工设计](docs/design/rework-orchestration.md)、[派单和视图验收](docs/reviews/acceptance/dispatch-views.md) 及 [桌面验收](docs/reviews/acceptance/desktop.md)。S6 的 24 小时浸泡和 72 小时 R0 观察是单独的正式验收项。短窗、局部回归或插件实装各自保留证据，发布状态以同一候选的验收记录为准。
