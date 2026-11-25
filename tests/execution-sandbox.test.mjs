@@ -1,5 +1,9 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	SANDBOX_KINDS,
 	SandboxError,
@@ -13,7 +17,10 @@ import {
 } from "../lib/execution-sandbox.js";
 import { ReadOnlyToolRunner, ToolRegistry } from "../lib/index.js";
 
-const ROOT = "/tmp/dsh-orchestra-sandbox";
+const TEMP = realpathSync(mkdtempSync(join(tmpdir(), "dsh-sandbox-")));
+const ROOT = join(TEMP, "workspace");
+mkdirSync(ROOT);
+after(() => rmSync(TEMP, { recursive: true, force: true }));
 
 function readOnlyPolicy(overrides = {}) {
 	return resolveSandboxPolicy({
@@ -36,6 +43,33 @@ function dockerPolicy(overrides = {}) {
 
 function sandboxError(code) {
 	return (error) => error instanceof SandboxError && error.code === code;
+}
+
+function fakeRuntime() {
+	const calls = [];
+	const exitTimers = new Set();
+	const spawnImpl = (bin, args) => {
+		calls.push([bin, ...args]);
+		const child = new EventEmitter();
+		child.stdout = new EventEmitter();
+		child.stderr = new EventEmitter();
+		child.kill = () => {
+			const timer = setTimeout(() => {
+				exitTimers.delete(timer);
+				child.emit("close", 137);
+			}, 1);
+			exitTimers.add(timer);
+		};
+		return child;
+	};
+	return {
+		calls,
+		spawnImpl,
+		removals: () => calls.filter((call) => call[1] === "rm" && call[2] === "-f"),
+		cleanup() {
+			for (const timer of exitTimers) clearTimeout(timer);
+		}
+	};
 }
 
 test("默认策略为只读工作区、无网络、工具拒绝优先", () => {
@@ -128,13 +162,25 @@ test("工具白名单、禁用清单与只读能力同时生效", () => {
 	assert.throws(() => writable.assertTool({ name: "delete_file", capability: "mutating" }), sandboxError("SANDBOX_TOOL_DENIED"));
 });
 
-test("路径必须落在服务端允许的目录内", () => {
+test("路径必须落在服务端允许的目录内，并按真实路径阻断符号链接逃逸", () => {
 	const sandbox = createExecutionSandbox({ policy: readOnlyPolicy() });
 	assert.equal(sandbox.assertPath("src/app.js"), `${ROOT}/src/app.js`);
 	assert.equal(sandbox.assertPath(ROOT), ROOT);
 	assert.throws(() => sandbox.assertPath("../outside.txt"), sandboxError("SANDBOX_PATH_DENIED"));
 	assert.throws(() => sandbox.assertPath("/etc/passwd"), sandboxError("SANDBOX_PATH_DENIED"));
 	assert.throws(() => sandbox.assertPath("src/../../escape"), sandboxError("SANDBOX_PATH_DENIED"));
+
+	const outside = join(TEMP, "outside");
+	mkdirSync(outside);
+	symlinkSync(outside, join(ROOT, "escape"));
+	assert.throws(() => sandbox.assertPath("escape/secret.txt"), sandboxError("SANDBOX_PATH_DENIED"));
+	symlinkSync("/etc", join(ROOT, "etc-link"));
+	assert.throws(() => sandbox.assertPath("etc-link/passwd"), sandboxError("SANDBOX_PATH_DENIED"));
+
+	const inside = join(ROOT, "inside");
+	mkdirSync(inside);
+	symlinkSync(inside, join(ROOT, "inside-link"));
+	assert.equal(sandbox.assertPath("inside-link"), inside);
 });
 
 test("网络默认关闭，allowlist 精确匹配与通配子域", () => {
@@ -249,6 +295,78 @@ test("受限网络 adapter 接入专用网络并保留挂载与用户隔离", ()
 	assert.equal(args[args.indexOf("--network") + 1], "dsh-egress-only");
 	assert.ok(args.includes(`${ROOT}:/workspace:ro`));
 	assert.ok(args.includes("65534:65534"));
+});
+
+test("容器参数包含 CPU、内存、PID 与临时磁盘限制", () => {
+	const adapter = createDockerAdapter({ image: "node:22-alpine", cpus: "1.5", memory: "256m", pidsLimit: 128, nofile: 512, tmpSize: "32m" });
+	const args = adapter.buildArgs({ bin: "node", args: [], cwd: ROOT, timeoutMs: 1000 }, dockerPolicy());
+	assert.equal(args[args.indexOf("--cpus") + 1], "1.5");
+	assert.equal(args[args.indexOf("--memory") + 1], "256m");
+	assert.equal(args[args.indexOf("--memory-swap") + 1], "256m");
+	assert.equal(args[args.indexOf("--pids-limit") + 1], "128");
+	assert.equal(args[args.indexOf("--ulimit") + 1], "nofile=512:512");
+	assert.ok(args.includes("/tmp:rw,noexec,nosuid,size=32m"));
+	assert.throws(() => createDockerAdapter({ image: "x", cpus: 0 }), sandboxError("SANDBOX_POLICY_INVALID"));
+	assert.throws(() => createDockerAdapter({ image: "x", pidsLimit: 0 }), sandboxError("SANDBOX_POLICY_INVALID"));
+	assert.throws(() => createDockerAdapter({ image: "x", nofile: 1.5 }), sandboxError("SANDBOX_POLICY_INVALID"));
+});
+
+test("取消任务时按容器引用执行 docker rm -f 并结束 CLI", async () => {
+	const runtime = fakeRuntime();
+	const adapter = createDockerAdapter({ image: "busybox", spawnImpl: runtime.spawnImpl });
+	const controller = new AbortController();
+	const running = adapter.run({
+		bin: "sleep",
+		args: ["60"],
+		cwd: ROOT,
+		timeoutMs: 60000,
+		signal: controller.signal
+	}, dockerPolicy({ allowWrite: true }));
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+	const invocation = runtime.calls[0];
+	assert.equal(invocation[1], "run");
+	assert.match(invocation[invocation.indexOf("--name") + 1], /^dsh-orchestra-[a-z0-9]+$/u);
+	assert.ok(invocation.includes("--cidfile"));
+	controller.abort(new Error("用户取消"));
+	await assert.rejects(running, /用户取消/u);
+	const removals = runtime.removals();
+	assert.equal(removals.length, 1);
+	assert.match(removals[0][3], /^(?:dsh-orchestra-[a-z0-9]+|[a-f0-9]{12,64})$/u);
+	runtime.cleanup();
+});
+
+test("超时后清理容器及残留进程并返回 124", async () => {
+	const runtime = fakeRuntime();
+	const adapter = createDockerAdapter({ image: "busybox", spawnImpl: runtime.spawnImpl });
+	const result = await adapter.run({
+		bin: "sleep",
+		args: ["60"],
+		cwd: ROOT,
+		timeoutMs: 20
+	}, dockerPolicy({ allowWrite: true }));
+	assert.equal(result.exitCode, 124);
+	assert.equal(result.timedOut, true);
+	assert.equal(runtime.removals().length, 1);
+	runtime.cleanup();
+});
+
+test("dispose 清理仍在运行的容器与客户端进程", async () => {
+	const runtime = fakeRuntime();
+	const adapter = createDockerAdapter({ image: "busybox", spawnImpl: runtime.spawnImpl });
+	const controller = new AbortController();
+	const running = adapter.run({
+		bin: "sleep",
+		args: ["60"],
+		cwd: ROOT,
+		timeoutMs: 60000,
+		signal: controller.signal
+	}, dockerPolicy({ allowWrite: true }));
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+	adapter.dispose();
+	controller.abort(new Error("停止"));
+	await assert.rejects(running, /停止/u);
+	assert.ok(runtime.removals().length >= 1);
+	runtime.cleanup();
 });
 
 test("只读工具执行经过统一沙箱，沙箱拒绝会转成编排错误码", async () => {

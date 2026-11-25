@@ -4261,6 +4261,9 @@ declare function createDockerAdapter(options?: {
   user?: string;
   memory?: string;
   pidsLimit?: number;
+  nofile?: number;
+  cpus?: number | string;
+  tmpSize?: string;
   maxOutputBytes?: number;
   networkName?: string;
 }): SandboxAdapter & {
@@ -4273,6 +4276,9 @@ declare function createRestrictedNetworkAdapter(options?: {
   user?: string;
   memory?: string;
   pidsLimit?: number;
+  nofile?: number;
+  cpus?: number | string;
+  tmpSize?: string;
   maxOutputBytes?: number;
   networkName?: string;
 }): SandboxAdapter & {
