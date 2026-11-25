@@ -1,8 +1,8 @@
 // R0 观察 harness：从候选包启动 S6 试用圈，按固定间隔采集真实时间、单调计时、
 // 账本水位与合成工作区摘要；支持短时 dry-run、状态、取消与离线核验。
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -24,8 +24,22 @@ const FILES = Object.freeze({
 	end: "end.json",
 	ledger: "ledger.db",
 	workspace: "workspace",
-	sample: "workspace/sample.txt"
+	sample: "workspace/sample.txt",
+	report: "report.json"
 });
+const MIN_SOAK_MS = 72 * 60 * 60 * 1000;
+const UNFINISHED_STATES = Object.freeze(["draft", "blocked", "queued", "dispatching", "running", "review", "retrying"]);
+
+function canonicalJson(value) {
+	if (value === null) return "null";
+	if (typeof value === "number") return JSON.stringify(value);
+	if (typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+	if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+	if (typeof value === "object") {
+		return "{" + Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => JSON.stringify(key) + ":" + canonicalJson(item)).join(",") + "}";
+	}
+	return JSON.stringify(String(value));
+}
 
 function fail(message) {
 	throw new Error(message);
@@ -88,7 +102,7 @@ function parseWindow(flags) {
 	return {
 		durationMs,
 		sampleMs,
-		mode: durationMs < 24 * 60 * 60 * 1000 ? "dry-run" : "soak"
+		mode: flags["dry-run"] ? "dry-run" : durationMs < 24 * 60 * 60 * 1000 ? "dry-run" : "soak"
 	};
 }
 
@@ -180,6 +194,57 @@ function assertLedgerFile(dir) {
 	const file = join(dir, FILES.ledger);
 	if (!existsSync(file)) fail("缺少 ledger.db");
 	return file;
+}
+
+/** 任务恢复与未完成任务是 R0 观察的必录项，不是可选项。 */
+function readTaskSnapshot(file) {
+	const db = new DatabaseSync(file, { readOnly: true });
+	try {
+		const hasTasks = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").get();
+		if (!hasTasks) return { counts: {}, unfinished: [] };
+		const counts = {};
+		for (const row of db.prepare("SELECT lifecycle_state AS state, COUNT(*) AS count FROM tasks GROUP BY lifecycle_state").all()) {
+			counts[row.state ?? "unknown"] = Number(row.count);
+		}
+		const placeholders = UNFINISHED_STATES.map(() => "?").join(",");
+		const unfinished = db.prepare(`SELECT task_id, lifecycle_state, status FROM tasks WHERE lifecycle_state IN (${placeholders}) ORDER BY updated_at DESC LIMIT 20`).all(...UNFINISHED_STATES).map((row) => ({
+			task_id: row.task_id,
+			lifecycle_state: row.lifecycle_state,
+			status: row.status
+		}));
+		return { counts, unfinished };
+	} finally {
+		db.close();
+	}
+}
+
+function diskSnapshot(dir) {
+	try {
+		const info = statfsSync(dir);
+		return {
+			block_size: Number(info.bsize),
+			blocks: Number(info.blocks),
+			blocks_free: Number(info.bfree),
+			blocks_available: Number(info.bavail)
+		};
+	} catch {
+		return null;
+	}
+}
+
+function resourceSnapshot(cpuStart) {
+	const usage = process.cpuUsage(cpuStart);
+	const memory = process.memoryUsage();
+	return {
+		pid: process.pid,
+		rss_bytes: memory.rss,
+		heap_used_bytes: memory.heapUsed,
+		heap_total_bytes: memory.heapTotal,
+		external_bytes: memory.external,
+		cpu_user_ms: Math.round(usage.user / 1000),
+		cpu_system_ms: Math.round(usage.system / 1000),
+		uptime_s: Math.round(process.uptime())
+	};
 }
 
 function observationSummary(dir) {
@@ -315,7 +380,7 @@ async function cancel(dir) {
 	console.log(`已取消并保留现场：${target}`);
 }
 
-function verifyObservation(dir) {
+function verifyObservation(dir, { requireSoak = false } = {}) {
 	const target = resolve(dir);
 	for (const name of [FILES.launch, FILES.config, FILES.worker, FILES.samples, FILES.end, FILES.ledger, FILES.sample]) {
 		if (!existsSync(join(target, name))) fail(`缺少 ${name}`);
@@ -370,11 +435,105 @@ function verifyObservation(dir) {
 		duration_ms: endedMs - startedMs,
 		schema_version: ledger.schema_version,
 		event_seq: ledger.event_seq,
-		workspace_sha256: workspaceSha
+		workspace_sha256: workspaceSha,
+		exceptions: samples.reduce((total, sample) => total + Number(sample.exceptions?.count ?? 0), 0),
+		unfinished_tasks: last.tasks?.unfinished ?? [],
+		recovery: worker.recovery ?? null,
+		last_resource: last.resource ?? null
 	};
+	if (requireSoak) {
+		const result = soakChecks(target, summary);
+		if (!result.ok) fail(`不满足 72 小时验收条件：${result.checks.filter((check) => !check.ok).map((check) => `${check.id} ${check.detail}`).join("; ")}`);
+	}
 	console.log("R0 观察核验通过");
-	for (const [key, value] of Object.entries(summary)) console.log(`${key}: ${value}`);
+	for (const [key, value] of Object.entries(summary)) {
+		if (key === "unfinished_tasks" || key === "recovery" || key === "last_resource") continue;
+		console.log(`${key}: ${value}`);
+	}
 	return summary;
+}
+
+/** 72 小时验收的硬条件：dry-run、取消、采样不足、异常、未记录恢复/资源/任务快照都不算通过。 */
+function soakChecks(dir, summary) {
+	const target = resolve(dir);
+	const launch = readJson(join(target, FILES.launch));
+	const config = readJson(join(target, FILES.config));
+	const worker = readJson(join(target, FILES.worker));
+	const end = readJson(join(target, FILES.end));
+	const samples = readSamples(target);
+	const checks = [];
+	const add = (id, ok, detail) => checks.push({ id, ok: Boolean(ok), detail });
+	add("candidate", /^[0-9a-f]{40}$/u.test(String(launch.candidate ?? "")), `候选 ${launch.candidate ?? "缺失"}`);
+	add("soak_mode", launch.mode === "soak" && config.mode === "soak", `launch=${launch.mode} config=${config.mode}`);
+	add("completed", end.status === "completed", `status=${end.status}`);
+	add("duration", summary.duration_ms >= MIN_SOAK_MS && Number(config.duration_ms) >= MIN_SOAK_MS, `实际 ${summary.duration_ms} ms / 配置 ${config.duration_ms} ms`);
+	add("samples", summary.samples >= summary.expected_slots && summary.expected_slots > 0, `${summary.samples} / ${summary.expected_slots}`);
+	add("exceptions", summary.exceptions === 0, `${summary.exceptions} 次未处理异常`);
+	add("recovery", worker.recovery?.attempted === true && worker.recovery?.ok === true, worker.recovery?.detail ?? "缺少任务恢复记录");
+	add("task_snapshot", samples.every((sample) => sample.tasks && Array.isArray(sample.tasks.unfinished)) && end.tasks !== undefined, "未完成任务快照缺失");
+	add("resource", samples.every((sample) => sample.resource && sample.disk), "资源占用快照缺失");
+	add("ledger", summary.schema_version > 0 && summary.event_seq >= 0, `schema=${summary.schema_version} seq=${summary.event_seq}`);
+	add("workspace", /^[0-9a-f]{64}$/u.test(String(summary.workspace_sha256 ?? "")), "工作区摘要缺失");
+	return { ok: checks.every((check) => check.ok), checks };
+}
+
+/** 生成带 Ed25519 签名的验收报告；不满足 72 小时条件时签名但 accepted=false。 */
+function signObservationReport(dir, { keyPath, outPath } = {}) {
+	if (!keyPath) fail("生成验收报告需要 --key <Ed25519 私钥 PEM>");
+	const privateKey = createPrivateKey(readFileSync(resolve(keyPath)));
+	if (privateKey.asymmetricKeyType !== "ed25519") fail("签名私钥必须是 Ed25519");
+	const target = resolve(dir);
+	const checks = [];
+	let summary = null;
+	try {
+		summary = verifyObservation(target);
+		checks.push(...soakChecks(target, summary).checks);
+	} catch (error) {
+		checks.push({ id: "integrity", ok: false, detail: error?.message ?? String(error) });
+	}
+	const payload = {
+		schema_version: 1,
+		generated_at: new Date().toISOString(),
+		observation: {
+			dir: target,
+			launch: readJson(join(target, FILES.launch)),
+			end: readJson(join(target, FILES.end))
+		},
+		verification: {
+			accepted: checks.length > 0 && checks.every((check) => check.ok),
+			checks,
+			summary
+		},
+		artifacts: {
+			samples_sha256: sha256File(join(target, FILES.samples)),
+			ledger_sha256: sha256File(join(target, FILES.ledger)),
+			workspace_sha256: sha256File(join(target, FILES.sample))
+		}
+	};
+	const publicKeyPem = createPublicKey(privateKey).export({ type: "spki", format: "pem" }).toString();
+	const signature = sign(null, Buffer.from(canonicalJson(payload)), privateKey).toString("base64");
+	const report = {
+		...payload,
+		signature: { algorithm: "ed25519", public_key_pem: publicKeyPem, value: signature }
+	};
+	const file = resolve(outPath ?? join(target, FILES.report));
+	writeJson(file, report);
+	console.log(`验收报告已写入：${file}`);
+	console.log(`accepted: ${payload.verification.accepted}`);
+	for (const check of checks) console.log(`${check.ok ? "PASS" : "FAIL"} ${check.id}: ${check.detail}`);
+	return report;
+}
+
+/** 只校验签名与载荷一致性；是否通过验收由 payload.verification.accepted 决定。 */
+function verifySignedReport(path) {
+	const file = resolve(path);
+	if (!existsSync(file)) fail(`报告不存在：${file}`);
+	const report = readJson(file);
+	const { signature, ...payload } = report;
+	if (signature?.algorithm !== "ed25519" || typeof signature.value !== "string" || typeof signature.public_key_pem !== "string") fail("报告签名结构不完整");
+	const ok = verify(null, Buffer.from(canonicalJson(payload)), createPublicKey(signature.public_key_pem), Buffer.from(signature.value, "base64"));
+	if (!ok) fail("验收报告签名校验失败");
+	return payload;
 }
 
 async function runWorker(dir) {
@@ -395,9 +554,16 @@ async function runWorker(dir) {
 	};
 	process.on("SIGTERM", stop);
 	process.on("SIGINT", stop);
+	const exceptions = [];
+	const recordException = (kind) => (error) => {
+		exceptions.push({ kind, at: new Date().toISOString(), message: String(error?.message ?? error) });
+	};
+	process.on("uncaughtException", recordException("uncaught_exception"));
+	process.on("unhandledRejection", recordException("unhandled_rejection"));
 	let service = null;
 	let samples = 0;
 	let failure = null;
+	const cpuStart = process.cpuUsage();
 	try {
 		const module = await import(pathToFileURL(join(target, "package", "lib", "index.js")).href);
 		if (typeof module.openServiceOrchestra !== "function") fail("候选包未导出 openServiceOrchestra");
@@ -412,6 +578,17 @@ async function runWorker(dir) {
 				authenticateOperator: () => null
 			}
 		});
+		let recovery;
+		try {
+			if (typeof service.orchestra.recoverTaskLifecycles !== "function") {
+				recovery = { attempted: false, ok: false, detail: "候选包未提供任务恢复接口" };
+			} else {
+				const result = await service.orchestra.recoverTaskLifecycles();
+				recovery = { attempted: true, ok: true, detail: "任务恢复已执行", result: result ?? null };
+			}
+		} catch (error) {
+			recovery = { attempted: true, ok: false, detail: `任务恢复失败：${error?.message ?? error}` };
+		}
 		const state = service.orchestra.trial?.get();
 		if (!state || state.circle !== "R0") fail("候选包未进入 R0 试用圈");
 		const samplingStartedAt = new Date().toISOString();
@@ -420,7 +597,8 @@ async function runWorker(dir) {
 			started_at: startedAt,
 			sampling_started_at: samplingStartedAt,
 			node: process.version,
-			package_entry: launch.package_entry
+			package_entry: launch.package_entry,
+			recovery
 		});
 		const workspacePath = join(target, FILES.sample);
 		const endAt = Date.now() + config.duration_ms;
@@ -433,6 +611,10 @@ async function runWorker(dir) {
 				at: new Date().toISOString(),
 				monotonic_ms: Math.round(performance.now() - monoStart),
 				rss_bytes: process.memoryUsage().rss,
+				resource: resourceSnapshot(cpuStart),
+				disk: diskSnapshot(target),
+				tasks: readTaskSnapshot(join(target, FILES.ledger)),
+				exceptions: exceptions.length === 0 ? { count: 0 } : { count: exceptions.length, last_at: exceptions.at(-1).at, last_message: exceptions.at(-1).message },
 				ledger,
 				trial: { candidate: trial.candidate, circle: trial.circle, revision: trial.revision, halted: trial.halted },
 				workspace_sha256: sha256File(workspacePath)
@@ -449,7 +631,11 @@ async function runWorker(dir) {
 			started_at: samplingStartedAt,
 			ended_at: new Date().toISOString(),
 			samples,
-			duration_ms: Date.now() - Date.parse(samplingStartedAt)
+			duration_ms: Date.now() - Date.parse(samplingStartedAt),
+			recovery,
+			exceptions: { count: exceptions.length, items: exceptions.slice(-20) },
+			tasks: readTaskSnapshot(join(target, FILES.ledger)),
+			resource: resourceSnapshot(cpuStart)
 		});
 	} catch (error) {
 		failure = error;
@@ -476,10 +662,12 @@ async function runWorker(dir) {
 
 function usage() {
 	console.log(`用法：
-  node --no-warnings scripts/r0-observe.mjs launch <新目录> <40位候选提交> <候选包.tgz> <包SHA256> [--seconds N | --minutes N] [--sample-seconds N]
+  node --no-warnings scripts/r0-observe.mjs launch <新目录> <40位候选提交> <候选包.tgz> <包SHA256> [--seconds N | --minutes N] [--sample-seconds N] [--dry-run]
   node --no-warnings scripts/r0-observe.mjs status <观察目录>
-  node --no-warnings scripts/r0-observe.mjs verify <观察目录>
-  node --no-warnings scripts/r0-observe.mjs cancel <观察目录>`);
+  node --no-warnings scripts/r0-observe.mjs verify <观察目录> [--allow-dry-run]
+  node --no-warnings scripts/r0-observe.mjs cancel <观察目录>
+  node --no-warnings scripts/r0-observe.mjs report <观察目录> --key <ed25519 私钥.pem> [--out report.json]
+  node --no-warnings scripts/r0-observe.mjs verify-report <report.json>`);
 }
 
 async function main(argv) {
@@ -500,12 +688,29 @@ async function main(argv) {
 	}
 	if (command === "verify") {
 		if (positional.length !== 1) fail("verify 需要一个观察目录");
-		verifyObservation(positional[0]);
+		verifyObservation(positional[0], { requireSoak: !flags["allow-dry-run"] });
 		return;
 	}
 	if (command === "cancel") {
 		if (positional.length !== 1) fail("cancel 需要一个观察目录");
 		await cancel(positional[0]);
+		return;
+	}
+	if (command === "report") {
+		if (positional.length !== 1 || typeof flags.key !== "string") {
+			usage();
+			fail("report 需要观察目录与 --key <Ed25519 私钥 PEM>");
+		}
+		const report = signObservationReport(positional[0], { keyPath: flags.key, outPath: typeof flags.out === "string" ? flags.out : undefined });
+		if (report.verification.accepted !== true) process.exitCode = 1;
+		return;
+	}
+	if (command === "verify-report") {
+		if (positional.length !== 1) fail("verify-report 需要报告文件");
+		const payload = verifySignedReport(positional[0]);
+		console.log(`签名有效；accepted: ${payload.verification?.accepted === true}`);
+		for (const check of payload.verification?.checks ?? []) console.log(`${check.ok ? "PASS" : "FAIL"} ${check.id}: ${check.detail}`);
+		if (payload.verification?.accepted !== true) process.exitCode = 1;
 		return;
 	}
 	if (command === "__worker") {
@@ -524,4 +729,16 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(SCRIPT)) {
 	});
 }
 
-export { assertCandidate, assertTarball, observationSummary, parseFlags, parseWindow, runWorker, sha256File, status, verifyObservation };
+export {
+	assertCandidate,
+	assertTarball,
+	observationSummary,
+	parseFlags,
+	parseWindow,
+	runWorker,
+	sha256File,
+	signObservationReport,
+	status,
+	verifyObservation,
+	verifySignedReport
+};
