@@ -2,7 +2,15 @@
 
 本文件记录 DSH Orchestra 插件包的用户可见变更。版本号与 [`package.json`](package.json) 一致。
 
-## 0.1.0-beta.3 — 开发中
+## 0.1.0-beta.3 — 2026-11-25
+
+### 新增
+
+- **Web Profile 宿主适配**：在 Cordis 上下文提供 `orchestraPanelTransport`；只有 owner 页面获得 proof 与 owner 身份，非 owner 使用受限传输且授权被拒绝。Web 服务仅放行已登记的只读工具，Desktop 路径保持不变。
+- **独立质量审查增强**：新增内置 SAST 规则与秘密检测，审查报告记录 `sast` 证据；新增必须由具名人工触发的 LLM 复核，模型结论不能替代或放宽确定性审查，也不能用于自动通过。
+- **统一执行沙箱**：支持 `local_process`、`read_only_workspace`、`docker`、`restricted_network`。目录、网络与工具权限由服务端策略默认拒绝，高风险任务只接受容器级隔离，沙箱不可用时拒绝执行而非回退宿主。
+- **成本控制**：区分实际费用、在途预留与 committed 合计，按剩余并发名额分摊预留并在实际费用到达时冲销；新增预算阈值告警（默认 80%）和 `block_new`/`cancel_running` 中断策略。不使用 Token 估算金额冒充真实费用。
+- 新增迁移 `075_cost_controls.sql`：预算阈值、中断策略、通知级别与元数据，以及预算预留表。
 
 ### 工程
 

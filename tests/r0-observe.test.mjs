@@ -35,7 +35,7 @@ function fixture(mutate = () => {}) {
 		"launch.json": {
 			schema_version: 1,
 			candidate: COMMIT,
-			version: "0.1.0-beta.2",
+			version: "0.1.0-beta.3",
 			mode: "dry-run",
 			started_at: new Date(START).toISOString()
 		},
