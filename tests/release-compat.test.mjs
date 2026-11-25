@@ -36,13 +36,13 @@ test("插件 Bundle 包装与 Profile 配置可解析", () => {
 	assert.match(patch, /id: dsh-orchestra/);
 });
 
-test("数据库迁移链连续，最后一项为 074", () => {
+test("数据库迁移链连续，最后一项为 075", () => {
 	const files = readdirSync(join(ROOT, "lib", "infra", "sqlite", "migrations"))
 		.filter((name) => name.endsWith(".sql"))
 		.sort();
-	assert.equal(files.length, 74);
+	assert.equal(files.length, 75);
 	files.forEach((file, index) => {
 		assert.equal(Number(file.slice(0, 3)), index + 1, `迁移编号不连续: ${file}`);
 	});
-	assert.equal(files.at(-1), "074_frontend_monitoring.sql");
+	assert.equal(files.at(-1), "075_cost_controls.sql");
 });
