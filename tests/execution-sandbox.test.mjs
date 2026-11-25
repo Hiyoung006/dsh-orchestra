@@ -8,6 +8,7 @@ import {
 	SANDBOX_KINDS,
 	SandboxError,
 	assertSandboxForTask,
+	compileEgressPolicy,
 	createDockerAdapter,
 	createExecutionSandbox,
 	createLocalProcessAdapter,
@@ -191,20 +192,25 @@ test("网络默认关闭，allowlist 精确匹配与通配子域", () => {
 	const allowed = createExecutionSandbox({
 		policy: dockerPolicy({
 			network: "allowlist",
-			allowHosts: ["api.example.com", "*.trusted.test"]
+			allowHosts: ["api.example.com", "*.trusted.test"],
+			egress: { network: "dsh-egress", proxy: { url: "http://egress-proxy.internal:3128", ip: "10.0.0.2" } }
 		})
 	});
 	assert.equal(allowed.assertNetwork({ host: "api.example.com" }), true);
 	assert.equal(allowed.assertNetwork({ host: "npm.trusted.test" }), true);
 	assert.throws(() => allowed.assertNetwork({ host: "evil.test" }), sandboxError("SANDBOX_NETWORK_DENIED"));
-	assert.throws(() => dockerPolicy({ network: "allowlist", allowHosts: [] }), sandboxError("SANDBOX_POLICY_INVALID"));
+	assert.throws(() => dockerPolicy({ network: "allowlist", allowHosts: [] }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
 	assert.throws(() => dockerPolicy({ network: "host" }), sandboxError("SANDBOX_POLICY_INVALID"));
 });
 
 test("执行请求按顺序经过工具、目录、网络检查后才交给 adapter", async () => {
 	const seen = [];
 	const sandbox = createExecutionSandbox({
-		policy: dockerPolicy({ network: "allowlist", allowHosts: ["api.example.com"] }),
+		policy: dockerPolicy({
+			network: "allowlist",
+			allowHosts: ["api.example.com"],
+			egress: { network: "dsh-egress", dnsPins: { "api.example.com": ["203.0.113.10"] } }
+		}),
 		adapters: {
 			docker: {
 				run: async (request, policy) => {
@@ -289,12 +295,76 @@ test("受限网络 adapter 接入专用网络并保留挂载与用户隔离", ()
 		workspaceRoot: ROOT,
 		network: "allowlist",
 		allowHosts: ["api.example.com"],
+		egress: { network: "dsh-egress-only", dnsPins: { "api.example.com": ["203.0.113.7"] }, ports: [443] },
 		tools: { allow: ["read_file"] }
 	});
 	const args = adapter.buildArgs({ bin: "curl", args: ["https://api.example.com"], cwd: ROOT, timeoutMs: 1000 }, policy);
 	assert.equal(args[args.indexOf("--network") + 1], "dsh-egress-only");
+	assert.ok(args.includes("api.example.com:203.0.113.7"));
+	assert.equal(args[args.indexOf("--dns") + 1], "127.0.0.1");
 	assert.ok(args.includes(`${ROOT}:/workspace:ro`));
 	assert.ok(args.includes("65534:65534"));
+
+	// Agent 提交的 networkHost 只用于断言，不能改变容器接入的出口网络。
+	const declared = adapter.buildArgs({ bin: "curl", args: [], cwd: ROOT, timeoutMs: 1000, networkHost: "api.example.com" }, policy);
+	assert.equal(declared[declared.indexOf("--network") + 1], "dsh-egress-only");
+	assert.equal(declared.filter((value) => value === "dsh-egress-only").length, 1);
+});
+
+test("受限网络未配置或不安全的出口控制时拒绝启用", () => {
+	const base = {
+		requestedKind: "restricted_network",
+		availableKinds: ["restricted_network"],
+		workspaceRoot: ROOT,
+		network: "allowlist",
+		tools: { allow: [] }
+	};
+	// 只有主机名、没有 pin 或代理：无法阻止 DNS 重绑定。
+	assert.throws(() => resolveSandboxPolicy({ ...base, allowHosts: ["api.example.com"] }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
+	// 通配域名没有代理。
+	assert.throws(() => resolveSandboxPolicy({ ...base, egress: { network: "dsh-egress", domains: ["*.example.com"] } }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
+	// pin 指向云元数据地址。
+	assert.throws(() => resolveSandboxPolicy({ ...base, egress: { network: "dsh-egress", domains: ["api.example.com"], dnsPins: { "api.example.com": ["169.254.169.254"] } } }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
+	// 出口白名单包含受保护网段。
+	assert.throws(() => resolveSandboxPolicy({ ...base, egress: { network: "dsh-egress", ips: ["127.0.0.0/8"] } }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
+	// 使用 Docker 默认网络。
+	assert.throws(() => resolveSandboxPolicy({ ...base, egress: { network: "bridge", domains: ["api.example.com"], proxy: { url: "http://10.0.0.2:3128" } } }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
+	// 代理主机不是 IP 且没有受控 DNS。
+	assert.throws(() => resolveSandboxPolicy({ ...base, egress: { network: "dsh-egress", domains: ["api.example.com"], proxy: { url: "http://egress.internal:3128" } } }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
+	assert.throws(() => compileEgressPolicy({ domains: ["api.example.com"], network: "dsh-egress" }), sandboxError("SANDBOX_EGRESS_UNCONFIGURED"));
+});
+
+test("出口断言同时校验域名、IP、端口与 DNS pin", () => {
+	const policy = resolveSandboxPolicy({
+		requestedKind: "restricted_network",
+		availableKinds: ["restricted_network"],
+		workspaceRoot: ROOT,
+		network: "allowlist",
+		allowHosts: ["api.example.com"],
+		egress: { network: "dsh-egress", dnsPins: { "api.example.com": ["203.0.113.10"] }, ports: [443] },
+		tools: { allow: [] }
+	});
+	const sandbox = createExecutionSandbox({ policy });
+	assert.equal(sandbox.assertNetwork({ host: "api.example.com", ip: "203.0.113.10", port: 443 }), true);
+	assert.equal(sandbox.assertNetwork({ ip: "203.0.113.10" }), true);
+	assert.throws(() => sandbox.assertNetwork({ host: "api.example.com", ip: "203.0.113.99" }), sandboxError("SANDBOX_NETWORK_DENIED"));
+	assert.throws(() => sandbox.assertNetwork({ host: "api.example.com", ip: "169.254.169.254" }), sandboxError("SANDBOX_NETWORK_DENIED"));
+	assert.throws(() => sandbox.assertNetwork({ host: "api.example.com", port: 80 }), sandboxError("SANDBOX_NETWORK_DENIED"));
+	assert.throws(() => sandbox.assertNetwork({ ip: "198.51.100.1" }), sandboxError("SANDBOX_NETWORK_DENIED"));
+	assert.throws(() => sandbox.assertNetwork({ host: "evil.test" }), sandboxError("SANDBOX_NETWORK_DENIED"));
+
+	const ipPolicy = resolveSandboxPolicy({
+		requestedKind: "restricted_network",
+		availableKinds: ["restricted_network"],
+		workspaceRoot: ROOT,
+		network: "allowlist",
+		egress: { network: "dsh-egress", ips: ["198.51.100.0/24"], ports: [8443] },
+		tools: { allow: [] }
+	});
+	const ipSandbox = createExecutionSandbox({ policy: ipPolicy });
+	assert.equal(ipSandbox.assertNetwork({ ip: "198.51.100.9", port: 8443 }), true);
+	assert.throws(() => ipSandbox.assertNetwork({ ip: "198.51.100.9", port: 80 }), sandboxError("SANDBOX_NETWORK_DENIED"));
+	assert.throws(() => ipSandbox.assertNetwork({ ip: "198.51.101.9", port: 8443 }), sandboxError("SANDBOX_NETWORK_DENIED"));
 });
 
 test("容器参数包含 CPU、内存、PID 与临时磁盘限制", () => {
@@ -399,4 +469,41 @@ test("只读工具执行经过统一沙箱，沙箱拒绝会转成编排错误�
 
 	const denied = new ReadOnlyToolRunner(registry, host, ROOT, createExecutionSandbox({ policy: readOnlyPolicy({ tools: { allow: [] } }) }));
 	await assert.rejects(denied.runTool({ command: "inspect", cwd: ".", timeoutMs: 1000 }), (error) => error?.code === "SANDBOX_TOOL_DENIED");
+});
+
+// 真实网络出口测试需要 Docker 与显式开启；未开启时显式 skip，绝不当作通过。
+const NETWORK_EGRESS_ENABLED = process.env.DSH_TEST_NETWORK_EGRESS === "1";
+test("真实网络：固定域名可解析，未固定域名无法解析", { skip: NETWORK_EGRESS_ENABLED ? false : "未设置 DSH_TEST_NETWORK_EGRESS=1，真实网络出口测试未执行" }, async () => {
+	const { execFileSync } = await import("node:child_process");
+	const image = process.env.DSH_TEST_IMAGE ?? "busybox";
+	const network = `dsh-egress-test-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+	try {
+		execFileSync("docker", ["network", "create", network], { stdio: "ignore" });
+	} catch (error) {
+		assert.fail(`无法创建测试网络，真实网络测试未执行：${String(error?.message ?? error)}`);
+	}
+	try {
+		const policy = resolveSandboxPolicy({
+			requestedKind: "restricted_network",
+			availableKinds: ["restricted_network"],
+			workspaceRoot: ROOT,
+			network: "allowlist",
+			allowHosts: ["pinned.test"],
+			egress: { network, dnsPins: { "pinned.test": ["203.0.113.10"] }, ports: [80] },
+			tools: { allow: [] }
+		});
+		const sandbox = createExecutionSandbox({
+			policy,
+			adapters: { restricted_network: createRestrictedNetworkAdapter({ image }) }
+		});
+		const pinned = await sandbox.run({ bin: "sh", args: ["-c", "grep -q pinned.test /etc/hosts"], cwd: ROOT, timeoutMs: 120000 });
+		assert.equal(pinned.exitCode, 0, pinned.stderr);
+		const dns = await sandbox.run({ bin: "sh", args: ["-c", "nslookup example.com >/dev/null 2>&1"], cwd: ROOT, timeoutMs: 120000 });
+		assert.notEqual(dns.exitCode, 0, "未固定域名不应能被外部 DNS 解析");
+		await sandbox.dispose();
+	} finally {
+		try {
+			execFileSync("docker", ["network", "rm", network], { stdio: "ignore" });
+		} catch {}
+	}
 });
