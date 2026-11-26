@@ -4146,70 +4146,34 @@ declare function serveOrchestra(opts: OrchestraOptions & {
   recoverChatModelAssignment?: (input: Parameters<typeof recoverChatModelAssignment>[3]) => Promise<string[]>;
   close: () => Promise<void>;
 }>;
-declare const SANDBOX_KINDS: readonly ["local_process", "read_only_workspace", "docker", "restricted_network"];
-type SandboxKind = (typeof SANDBOX_KINDS)[number];
-declare const TASK_RISKS: readonly ["low", "medium", "high"];
-type TaskRisk = (typeof TASK_RISKS)[number];
-type SandboxNetworkMode = "none" | "allowlist" | "host";
-type SandboxDnsPins = Readonly<Record<string, readonly string[]>>;
-type SandboxEgressOptions = {
-  domains?: string[];
-  ips?: string[];
-  ports?: number[];
-  dnsPins?: Record<string, string[]>;
-  dnsServers?: string[];
-  proxy?: {
-    url: string;
-    ip?: string;
-  } | null;
-  network?: string;
-  networkName?: string;
+declare const EXECUTION_MODES: readonly ["read_only_workspace", "local_process"];
+type ExecutionMode = (typeof EXECUTION_MODES)[number];
+declare const LEGACY_EXECUTION_MODES: readonly ["docker", "restricted_network"];
+type LegacyExecutionMode = (typeof LEGACY_EXECUTION_MODES)[number];
+declare const SIDE_EFFECT_POLICIES: readonly ["pure", "compensable", "irreversible"];
+type SideEffectPolicy = (typeof SIDE_EFFECT_POLICIES)[number];
+declare const EXECUTION_TRUST_LEVELS: readonly ["trusted", "untrusted"];
+type ExecutionTrust = (typeof EXECUTION_TRUST_LEVELS)[number];
+type LegacyExecutionConfigEntry = {
+  path: string;
+  value: string;
+  suggested_mode: "read_only_workspace";
+  requires_execution_reconfirmation: true;
+  reason: string;
 };
-type SandboxEgressPolicy = {
-  configured: true;
-  network: string;
-  domains: readonly string[];
-  ips: readonly string[];
-  ports: readonly number[];
-  blocked: readonly string[];
-  dns: {
-    mode: "pinned" | "restricted" | "proxy";
-    servers: readonly string[];
-    pins: SandboxDnsPins;
-  };
-  proxy: {
-    url: string;
-    host: string;
-    port: number;
-    ip: {
-      version: 4 | 6;
-      value: bigint;
-      text: string;
-    } | null;
-  } | null;
+type LegacyExecutionConfigReport = {
+  legacy: boolean;
+  entries: readonly LegacyExecutionConfigEntry[];
 };
 type SandboxPolicy = {
-  kind: SandboxKind;
-  task_risk: TaskRisk;
-  isolation: "process" | "capability" | "container";
-  container: boolean;
+  execution_mode: ExecutionMode;
+  side_effect_policy: SideEffectPolicy;
+  execution_trust: ExecutionTrust;
+  isolation: "process" | "capability";
   filesystem: {
     workspace_root: string;
     roots: readonly string[];
     read_only: boolean;
-  };
-  network: {
-    mode: SandboxNetworkMode;
-    allow_hosts: readonly string[];
-    allow_ips: readonly string[];
-    allow_ports: readonly number[];
-    blocked_ips: readonly string[];
-    dns: {
-      mode: "none" | "pinned" | "restricted" | "proxy";
-      servers: readonly string[];
-      pins: SandboxDnsPins;
-    };
-    egress: SandboxEgressPolicy | null;
   };
   tools: {
     allow: readonly string[];
@@ -4217,6 +4181,8 @@ type SandboxPolicy = {
     default: "deny";
   };
   allow_host_execution: boolean;
+  requires_approval: boolean;
+  approved: boolean;
   fail_closed: true;
 };
 type SandboxToolCapability = "read_only" | "mutating" | "compensating";
@@ -4227,9 +4193,6 @@ type SandboxRunRequest = {
   timeoutMs?: number;
   tool?: string;
   capability?: SandboxToolCapability;
-  networkHost?: string;
-  networkIp?: string;
-  networkPort?: number;
   signal?: AbortSignal;
 };
 type SandboxRunResult = {
@@ -4238,9 +4201,10 @@ type SandboxRunResult = {
   stderr: string;
   boundary: string;
   timedOut?: boolean;
+  evidence?: Readonly<Record<string, unknown>>;
 };
 type SandboxAdapter = {
-  kind?: SandboxKind;
+  kind?: ExecutionMode;
   available?: () => boolean;
   run: (request: SandboxRunRequest, policy: SandboxPolicy) => Promise<SandboxRunResult | {
     exitCode: number;
@@ -4252,7 +4216,7 @@ type SandboxAdapter = {
   dispose?: () => Promise<void> | void;
 };
 type ExecutionSandbox = {
-  readonly kind: SandboxKind;
+  readonly execution_mode: ExecutionMode;
   readonly isolation: SandboxPolicy["isolation"];
   readonly policy: SandboxPolicy;
   describe(): Readonly<Record<string, unknown>>;
@@ -4261,12 +4225,7 @@ type ExecutionSandbox = {
     capability?: SandboxToolCapability;
   }): true;
   assertPath(target: string): string;
-  assertNetwork(input: {
-    host?: string;
-    ip?: string;
-    port?: number;
-  }): true;
-  assertTask(sideEffectPolicy?: "pure" | "compensable" | "irreversible"): SandboxPolicy;
+  assertTask(sideEffectPolicy?: SideEffectPolicy, executionTrust?: ExecutionTrust): SandboxPolicy;
   run(request: SandboxRunRequest): Promise<SandboxRunResult>;
   dispose(): Promise<void>;
 };
@@ -4276,64 +4235,39 @@ declare class SandboxError extends Error {
   constructor(code: string, message: string, details?: Record<string, unknown>);
 }
 declare function resolveSandboxPolicy(options?: {
-  taskRisk?: TaskRisk;
-  requestedKind?: SandboxKind;
-  availableKinds?: SandboxKind[];
+  sideEffectPolicy?: SideEffectPolicy;
+  executionTrust?: ExecutionTrust;
+  executionMode?: ExecutionMode;
+  availableModes?: ExecutionMode[];
   workspaceRoot: string;
   allowedRoots?: string[];
-  network?: SandboxNetworkMode;
-  allowHosts?: string[];
-  egress?: SandboxEgressOptions;
   tools?: {
     allow?: string[];
     deny?: string[];
   };
   allowWrite?: boolean;
   allowHostExecution?: boolean;
+  approved?: boolean;
 }): SandboxPolicy;
 declare function assertSandboxForTask(input: {
-  sideEffectPolicy?: "pure" | "compensable" | "irreversible";
+  sideEffectPolicy?: SideEffectPolicy;
+  executionTrust?: ExecutionTrust;
   policy: SandboxPolicy;
 }): SandboxPolicy;
-declare function compileEgressPolicy(options?: SandboxEgressOptions): SandboxEgressPolicy;
+declare function detectLegacyExecutionConfig(input: unknown): LegacyExecutionConfigReport;
+declare function assertNoLegacyExecutionConfig(input: unknown, source?: string): LegacyExecutionConfigReport;
 declare function createExecutionSandbox(input: {
   policy: SandboxPolicy;
-  adapters?: Partial<Record<SandboxKind, SandboxAdapter>>;
+  adapters?: Partial<Record<ExecutionMode, SandboxAdapter>>;
 }): ExecutionSandbox;
 declare function createReadOnlyWorkspaceAdapter(options?: {
   run?: SandboxAdapter["run"];
 }): SandboxAdapter;
 declare function createLocalProcessAdapter(options?: {
   run?: SandboxAdapter["run"];
+  env?: Record<string, string | undefined>;
+  spawnImpl?: (...args: any[]) => any;
+  maxOutputBytes?: number;
+  deniedExecutables?: string[];
 }): SandboxAdapter;
-declare function createDockerAdapter(options?: {
-  image?: string;
-  dockerBin?: string;
-  spawnImpl?: (...args: any[]) => any;
-  user?: string;
-  memory?: string;
-  pidsLimit?: number;
-  nofile?: number;
-  cpus?: number | string;
-  tmpSize?: string;
-  maxOutputBytes?: number;
-  networkName?: string;
-}): SandboxAdapter & {
-  buildArgs(request: SandboxRunRequest, policy: SandboxPolicy): string[];
-};
-declare function createRestrictedNetworkAdapter(options?: {
-  image?: string;
-  dockerBin?: string;
-  spawnImpl?: (...args: any[]) => any;
-  user?: string;
-  memory?: string;
-  pidsLimit?: number;
-  nofile?: number;
-  cpus?: number | string;
-  tmpSize?: string;
-  maxOutputBytes?: number;
-  networkName?: string;
-}): SandboxAdapter & {
-  buildArgs(request: SandboxRunRequest, policy: SandboxPolicy): string[];
-};
-export { type CollaborationBinding, type CollaborationHost, Config, type DshExecutionModel, type EffectVerdict, type EffectVerificationTarget, type EffectVerifier, type ExecutionSandbox, type InspectMemoryWrite, type IntakeOptions, type MemoryHostOptions, type MemoryPluginWriter, type MemoryRecoveryRequest, type MemoryRuntimeOptions, type MemoryWriteEvidence, type MemoryWriteInspection, type ModelComplexity, type ModelProfile, type ModelRecommendation, type ModelRouting, type ModelRoutingContext, Orchestra, OrchestraOptions, type PlanningTimeoutSnapshot, ReadOnlyToolRunner, type RegisterRunArtifact, type ResolveTriggerNodeSpecs, SANDBOX_KINDS, SandboxError, type SandboxDnsPins, type SandboxEgressOptions, type SandboxEgressPolicy, type SandboxKind, type SandboxPolicy, type SandboxRunRequest, type SandboxRunResult, TASK_RISKS, type TaskPlanProposal, type TaskPlanningOptions, type TaskRisk, type TaskTriggerCreate, type TaskTriggerExecutionFilter, type TaskTriggerExecutionRow, type TaskTriggerOccurrence, type TaskTriggerReadiness, type TaskTriggerView, ToolRegistry, type TrialOptions, type TrialScope, type TriggerRunReady, apply, assertSandboxForTask, compileEgressPolicy, createCollaborationHost, createDockerAdapter, createDshExecutor, createDshPlanningCallback, createExecutionSandbox, createIntakeControl, createLocalProcessAdapter, createMemoryRuntime, createOrchestra, createReadOnlyWorkspaceAdapter, createRestrictedNetworkAdapter, getTaskPlanRecommendation, inspectMemoryRecovery, listTriggerExecutionStates, name, openServiceOrchestra, registerRunArtifact, renewNodeLease, resolveMemoryRecovery, resolveSandboxPolicy, runNode, serveDshOrchestra, serveOrchestra, submitReport, sweepNow, version, withPlanningBudget };
+export { type CollaborationBinding, type CollaborationHost, Config, type DshExecutionModel, type EffectVerdict, type EffectVerificationTarget, type EffectVerifier, type ExecutionSandbox, type InspectMemoryWrite, type IntakeOptions, type MemoryHostOptions, type MemoryPluginWriter, type MemoryRecoveryRequest, type MemoryRuntimeOptions, type MemoryWriteEvidence, type MemoryWriteInspection, type ModelComplexity, type ModelProfile, type ModelRecommendation, type ModelRouting, type ModelRoutingContext, Orchestra, OrchestraOptions, type PlanningTimeoutSnapshot, ReadOnlyToolRunner, type RegisterRunArtifact, type ResolveTriggerNodeSpecs, EXECUTION_MODES, EXECUTION_TRUST_LEVELS, LEGACY_EXECUTION_MODES, SIDE_EFFECT_POLICIES, SandboxError, type ExecutionMode, type ExecutionTrust, type LegacyExecutionConfigEntry, type LegacyExecutionConfigReport, type LegacyExecutionMode, type SandboxPolicy, type SideEffectPolicy, type SandboxRunRequest, type SandboxRunResult, type TaskPlanProposal, type TaskPlanningOptions, type TaskTriggerCreate, type TaskTriggerExecutionFilter, type TaskTriggerExecutionRow, type TaskTriggerOccurrence, type TaskTriggerReadiness, type TaskTriggerView, ToolRegistry, type TrialOptions, type TrialScope, type TriggerRunReady, apply, assertNoLegacyExecutionConfig, assertSandboxForTask, createCollaborationHost, createDshExecutor, createDshPlanningCallback, createExecutionSandbox, createIntakeControl, createLocalProcessAdapter, createMemoryRuntime, createOrchestra, createReadOnlyWorkspaceAdapter, detectLegacyExecutionConfig, getTaskPlanRecommendation, inspectMemoryRecovery, listTriggerExecutionStates, name, openServiceOrchestra, registerRunArtifact, renewNodeLease, resolveMemoryRecovery, resolveSandboxPolicy, runNode, serveDshOrchestra, serveOrchestra, submitReport, sweepNow, version, withPlanningBudget };
