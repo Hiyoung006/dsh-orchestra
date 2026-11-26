@@ -576,3 +576,26 @@ test("静态扫描：扫描失败不能被当作通过", async (t) => {
 	assert.equal(scanned.json.data.reviewReport.approval_eligible, false);
 	assert.equal(scanned.json.data.reviewReport.checks.dependencyScan, "failed");
 });
+
+test("健康检查明确报告执行能力：只读工作区可用、本地进程执行未开放", async (t) => {
+	const dir = tempDir();
+	const capabilities = {
+		profile: "web",
+		read_only_workspace: "available",
+		local_process: "not_open"
+	};
+	const service = await serveOrchestra(options(dir, { executionCapabilities: capabilities }));
+	t.after(async () => service.close());
+	const health = await api(service, "/health", { secret: null });
+	assert.equal(health.status, 200);
+	assert.deepEqual(health.json.data.execution_capabilities, capabilities);
+});
+
+test("未配置执行能力时健康检查返回 null，不伪造本地执行环境", async (t) => {
+	const dir = tempDir();
+	const service = await serveOrchestra(options(dir));
+	t.after(async () => service.close());
+	const health = await api(service, "/health", { secret: null });
+	assert.equal(health.status, 200);
+	assert.equal(health.json.data.execution_capabilities, null);
+});

@@ -16,6 +16,8 @@
 - **任务风险模型解耦**：`sideEffectPolicy`（`pure` / `compensable` / `irreversible`）与 `executionTrust`（`trusted` / `untrusted`）独立决定执行权限。纯任务只读；可补偿任务可在显式授权后本地执行；不可逆任务必须人工审批；不可信代码禁止在宿主执行。风险标签不能绕过执行限制。
 - **本地进程加固**：命令只接受 `executable + args`，不使用 shell 字符串；拦截危险命令与 shell；清理敏感环境变量与 `NODE_OPTIONS` 等注入变量；校验真实工作目录；支持超时、取消、退出状态与执行证据。
 - **旧配置检测**：启动时检测旧版 `sandbox.kind` / `sandbox.risk`，命中后以 `LEGACY_EXECUTION_CONFIG` 明确拒绝并输出迁移建议；不会重置 SQLite，也不会改写历史任务与执行证据。
+- **命名清理**：`lib/execution-sandbox.js` 更名为 `lib/execution-policy.js`，测试更名为 `tests/execution-policy.test.mjs`，脚本 `test:sandbox` 更名为 `test:policy`。错误类规范名为 `ExecutionPolicyError`，并保留 `SandboxError` 别名以兼容既有调用。
+- **Web Profile 能力展示**：设置页新增「执行权限与工作区」，明确显示只读工作区「可用」、本地进程执行「未开放」，避免把 `local_process` 模式误认为已具备执行环境。
 - **版本**：`0.1.0-beta.4`。没有新增数据库迁移，迁移链仍到 `075`。
 
 ### 保留

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import {
 	EXECUTION_MODES,
 	EXECUTION_TRUST_LEVELS,
+	ExecutionPolicyError,
 	LEGACY_EXECUTION_MODES,
 	SIDE_EFFECT_POLICIES,
 	SandboxError,
@@ -19,7 +20,7 @@ import {
 	detectLegacyExecutionConfig,
 	resolveSandboxPolicy,
 	sanitizeExecutionEnv
-} from "../lib/execution-sandbox.js";
+} from "../lib/execution-policy.js";
 import { ReadOnlyToolRunner, ToolRegistry, version } from "../lib/index.js";
 
 const TEMP = realpathSync(mkdtempSync(join(tmpdir(), "dsh-sandbox-")));
@@ -53,7 +54,7 @@ function localPolicy(overrides = {}) {
 }
 
 function sandboxError(code) {
-	return (error) => error instanceof SandboxError && error.code === code;
+	return (error) => error instanceof ExecutionPolicyError && error.code === code;
 }
 
 function runNode(adapter, policy, script, ...rest) {
@@ -67,6 +68,8 @@ test("执行模式、副作用与可信级别枚举已收敛，默认策略为�
 	assert.deepEqual(LEGACY_EXECUTION_MODES, ["docker", "restricted_network"]);
 	assert.deepEqual(SIDE_EFFECT_POLICIES, ["pure", "compensable", "irreversible"]);
 	assert.deepEqual(EXECUTION_TRUST_LEVELS, ["trusted", "untrusted"]);
+	assert.equal(SandboxError, ExecutionPolicyError);
+	assert.equal(new ExecutionPolicyError("SANDBOX_FAILED", "x").name, "ExecutionPolicyError");
 	const policy = readOnlyPolicy();
 	assert.equal(policy.execution_mode, "read_only_workspace");
 	assert.equal(policy.isolation, "capability");
@@ -424,7 +427,7 @@ test("旧版 SQLite 任务记录保留并标记，不重置数据", () => {
 });
 
 test("没有 Docker 命令时仍可启动并执行本地进程", () => {
-	const sandboxUrl = new URL("../lib/execution-sandbox.js", import.meta.url).href;
+	const sandboxUrl = new URL("../lib/execution-policy.js", import.meta.url).href;
 	const emptyPath = join(TEMP, "empty-bin");
 	mkdirSync(emptyPath);
 	writeFileSync(join(emptyPath, "README"), "no executables here\n");

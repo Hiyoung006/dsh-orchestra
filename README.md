@@ -169,7 +169,7 @@ sequenceDiagram
 
 在获准工作区根目录创建普通 UTF-8 文本 `ORCHESTRA.md`，写下项目目标、关键目录和验证规则。把优先内容放在最前 120 行和 4 KiB 内。首次派单固定本次运行采用的版本，后续节点复用同一份。运行侧会另附本次要求与必要的上游成果引用。
 
-在 **设置** 可调整主脑和执行模型、自动接管、规划与执行时限、排队容量及 Workflow 并发。模型目录与能否设置思考强度由 DSH 提供。开通的工具决定子智能体能读什么。个人适配器的 `local.allowWorkspaceListing` 默认关闭，只授权列出允许的一级条目。`local.sampleFile` 可在宿主配置中指定一个明确授权的文本文件供验收读取。`local.sandbox.mode` 选择**执行权限与工作区**模式，默认 `read_only_workspace`；`local.sandbox.trust` 标记任务可信级别。`local_process` 必须同时获得宿主执行授权，且不可信代码只能停留在只读工作区；不可逆任务仍需人工审批。旧版 `local.sandbox.kind = "docker" | "restricted_network"` 已移除，必须手工迁移，插件不会静默降级为宿主执行。
+在 **设置** 可调整主脑和执行模型、自动接管、规划与执行时限、排队容量及 Workflow 并发。模型目录与能否设置思考强度由 DSH 提供。开通的工具决定子智能体能读什么。个人适配器的 `local.allowWorkspaceListing` 默认关闭，只授权列出允许的一级条目。`local.sampleFile` 可在宿主配置中指定一个明确授权的文本文件供验收读取。`local.sandbox.mode` 选择**执行权限与工作区**模式，默认 `read_only_workspace`；`local.sandbox.trust` 标记任务可信级别。`local_process` 必须同时获得宿主执行授权，且不可信代码只能停留在只读工作区；不可逆任务仍需人工审批。旧版 `local.sandbox.kind = "docker" | "restricted_network"` 已移除，必须手工迁移，插件不会静默降级为宿主执行。设置页的「执行权限与工作区」会显示当前 Profile 的装配状态：只读工作区可用、本地进程执行未开放；选择 `local_process` 不会自动获得执行环境。
 
 成本控制以宿主回报的真实费用为准。全局与单任务预算各自区分实际费用（actual）、在途预留（held）与两者合计（committed）：派发前按剩余并发名额分摊剩余预算，为任务预留一部分额度；宿主实际费用到达时冲销对应预留，未消耗部分在任务进入终态时释放。预算达到 `budgetWarnPercent`（默认 80%）发送 warning，用尽时发送 critical。`budgetInterruptPolicy` 默认 `block_new`，只阻断新派发；设为 `cancel_running` 时还会把正在执行的任务转入取消。系统不做 Token 到金额的换算，没有宿主实际费用时相关数值一律显示不可用。
 
