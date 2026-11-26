@@ -23,7 +23,7 @@ DSH Orchestra 是 DeepSeek Harness（DSH）的工作流编排插件。你描述�
 1. 准备一个与你的 DSH 版本兼容的 Orchestra 插件包（`.tgz`）。使用已取得的包，或按下方[源码构建](#开发与验收)生成。
 2. 在 DSH Desktop 的插件管理里安装该包，按宿主提示重新加载，确认侧栏出现 **Orchestra**。包通过 Cordis 注册服务端和 Web 客户端插件。
 3. 打开一个工作区及其中的普通会话。在 **Orchestra → 设置** 检查服务连接、模型和 **聊天任务自动接管**。个人 Desktop 适配器默认开启明确任务的自动接管。主脑默认跟随会话，也可指定已配置的供应商、模型及可用的思考强度。子智能体模型单独设置。
-4. 本仓包声明兼容 DSH `0.2.2` 系列，原生 Desktop 会话派单和审批的验收宿主为 `0.2.2-rc.5`。其他宿主的加载和能力以本机健康页与宿主装配为准。当前插件版本为 `0.1.0-beta.3`，要求 Node `^22.19.0 || >=24.0.0`；升级与降级步骤见 [升级与降级说明](docs/upgrade-downgrade.md)。
+4. 本仓包声明兼容 DSH `0.2.2` 系列，原生 Desktop 会话派单和审批的验收宿主为 `0.2.2-rc.5`。其他宿主的加载和能力以本机健康页与宿主装配为准。当前插件版本为 `0.1.0-beta.4`，要求 Node `^22.19.0 || >=24.0.0`；升级与降级步骤见 [升级与降级说明](docs/upgrade-downgrade.md)。
 
 ### 在原会话发一条合成任务
 
@@ -169,7 +169,7 @@ sequenceDiagram
 
 在获准工作区根目录创建普通 UTF-8 文本 `ORCHESTRA.md`，写下项目目标、关键目录和验证规则。把优先内容放在最前 120 行和 4 KiB 内。首次派单固定本次运行采用的版本，后续节点复用同一份。运行侧会另附本次要求与必要的上游成果引用。
 
-在 **设置** 可调整主脑和执行模型、自动接管、规划与执行时限、排队容量及 Workflow 并发。模型目录与能否设置思考强度由 DSH 提供。开通的工具决定子智能体能读什么。个人适配器的 `local.allowWorkspaceListing` 默认关闭，只授权列出允许的一级条目。`local.sampleFile` 可在宿主配置中指定一个明确授权的文本文件供验收读取。`local.sandbox.kind` 选择执行沙箱，默认 `read_only_workspace`；`local.sandbox.risk` 为 `high` 时只接受容器级隔离，宿主不具备对应沙箱会在启动时直接拒绝，而不会退回真实宿主执行。
+在 **设置** 可调整主脑和执行模型、自动接管、规划与执行时限、排队容量及 Workflow 并发。模型目录与能否设置思考强度由 DSH 提供。开通的工具决定子智能体能读什么。个人适配器的 `local.allowWorkspaceListing` 默认关闭，只授权列出允许的一级条目。`local.sampleFile` 可在宿主配置中指定一个明确授权的文本文件供验收读取。`local.sandbox.mode` 选择**执行权限与工作区**模式，默认 `read_only_workspace`；`local.sandbox.trust` 标记任务可信级别。`local_process` 必须同时获得宿主执行授权，且不可信代码只能停留在只读工作区；不可逆任务仍需人工审批。旧版 `local.sandbox.kind = "docker" | "restricted_network"` 已移除，必须手工迁移，插件不会静默降级为宿主执行。
 
 成本控制以宿主回报的真实费用为准。全局与单任务预算各自区分实际费用（actual）、在途预留（held）与两者合计（committed）：派发前按剩余并发名额分摊剩余预算，为任务预留一部分额度；宿主实际费用到达时冲销对应预留，未消耗部分在任务进入终态时释放。预算达到 `budgetWarnPercent`（默认 80%）发送 warning，用尽时发送 critical。`budgetInterruptPolicy` 默认 `block_new`，只阻断新派发；设为 `cancel_running` 时还会把正在执行的任务转入取消。系统不做 Token 到金额的换算，没有宿主实际费用时相关数值一律显示不可用。
 

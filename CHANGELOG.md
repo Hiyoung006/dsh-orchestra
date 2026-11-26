@@ -2,6 +2,33 @@
 
 本文件记录 DSH Orchestra 插件包的用户可见变更。版本号与 [`package.json`](package.json) 一致。
 
+## 0.1.0-beta.4 — 2026-11-26
+
+### 移除
+
+- **内置 Docker Sandbox**：删除 `createDockerAdapter`、`createRestrictedNetworkAdapter`、容器生命周期与 CID/命名管理、镜像/CPU/内存/PID/临时磁盘参数、Docker 网络出口策略、DNS Pin、代理注入与 `compileEgressPolicy`。`docker` 与 `restricted_network` 不再是可用执行模式，DSH Orchestra 不再依赖 Docker Desktop 或 Docker Engine。
+- **Restricted Network**：移除域名/IP/端口白名单、受保护网段与 `networkHost` 断言链路。删除不再有真实隔离语义的网络策略代码与测试。
+- **旧配置兼容层**：不接受 `sandbox.kind = "docker" | "restricted_network"`，也不再把旧模式静默映射为 `local_process`。
+
+### 变更
+
+- **执行权限与工作区**：执行模式收敛为 `read_only_workspace` 与 `local_process`。界面与文档不再使用「执行沙箱」，避免把普通进程权限隔离误认为操作系统沙箱。
+- **任务风险模型解耦**：`sideEffectPolicy`（`pure` / `compensable` / `irreversible`）与 `executionTrust`（`trusted` / `untrusted`）独立决定执行权限。纯任务只读；可补偿任务可在显式授权后本地执行；不可逆任务必须人工审批；不可信代码禁止在宿主执行。风险标签不能绕过执行限制。
+- **本地进程加固**：命令只接受 `executable + args`，不使用 shell 字符串；拦截危险命令与 shell；清理敏感环境变量与 `NODE_OPTIONS` 等注入变量；校验真实工作目录；支持超时、取消、退出状态与执行证据。
+- **旧配置检测**：启动时检测旧版 `sandbox.kind` / `sandbox.risk`，命中后以 `LEGACY_EXECUTION_CONFIG` 明确拒绝并输出迁移建议；不会重置 SQLite，也不会改写历史任务与执行证据。
+- **版本**：`0.1.0-beta.4`。没有新增数据库迁移，迁移链仍到 `075`。
+
+### 保留
+
+- 只读工作区的 realpath 校验、路径穿越与符号链接逃逸阻断、文件大小与类型限制、超时与取消。
+- Git Worktree 的任务隔离、Diff、变更追踪、合并、失败保留与授权清理。
+- 服务端执行决策、工具白名单/禁用清单、执行证据与人工审批。
+
+### 测试
+
+- 新增无 Docker 环境启动、Docker 命令缺失、只读权限、未授权本地执行、路径限制、符号链接逃逸、shell 注入、敏感环境变量清理、执行超时、进程取消、危险命令拦截、不可逆审批、不可信代码拒绝、旧 Docker 配置迁移与旧 SQLite 记录保留测试。
+- 现有 Git Worktree 隔离与工作区安全测试继续执行。
+
 ## 0.1.0-beta.3 — 2026-11-25
 
 ### 新增
